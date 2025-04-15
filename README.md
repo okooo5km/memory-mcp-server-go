@@ -76,6 +76,9 @@ curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/downloa
 unzip memory-mcp-server.zip
 chmod +x memory-mcp-server-go
 
+# Remove quarantine attribute to avoid security warnings
+xattr -d com.apple.quarantine memory-mcp-server-go
+
 # Install to your local bin directory
 mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
@@ -89,6 +92,9 @@ curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/downloa
 unzip memory-mcp-server.zip
 chmod +x memory-mcp-server-go
 
+# Remove quarantine attribute to avoid security warnings
+xattr -d com.apple.quarantine memory-mcp-server-go
+
 # Install to your local bin directory
 mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
@@ -101,6 +107,9 @@ rm memory-mcp-server.zip
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-macos-universal.zip -o memory-mcp-server.zip
 unzip memory-mcp-server.zip
 chmod +x memory-mcp-server-go
+
+# Remove quarantine attribute to avoid security warnings
+xattr -d com.apple.quarantine memory-mcp-server-go
 
 # Install to your local bin directory
 mkdir -p ~/.local/bin
