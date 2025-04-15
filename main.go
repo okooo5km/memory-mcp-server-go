@@ -462,27 +462,68 @@ func (m *KnowledgeGraphManager) OpenNodes(names []string) (KnowledgeGraph, error
 	}, nil
 }
 
-func main() {
+// Version information
+const (
+	version = "0.1.0"
+	appName = "Memory MCP Server"
+)
 
+// printVersion prints version information
+func printVersion() {
+	fmt.Printf("%s version %s\n", appName, version)
+}
+
+// printUsage prints a custom usage message
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "%s is a Model Context Protocol server that provides knowledge graph management capabilities.\n\n", appName)
+	fmt.Fprintf(os.Stderr, "Options:\n")
+	flag.PrintDefaults()
+}
+
+func main() {
 	var transport string
 	var memory string
 	var port int = 8080
+	var showVersion bool
+	var showHelp bool
 
+	// Override the default usage message
+	flag.Usage = printUsage
+
+	// Define command-line flags
 	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio or sse)")
 	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio or sse)")
 	flag.StringVar(&memory, "memory", "", "Path to memory file")
 	flag.StringVar(&memory, "m", "", "Path to memory file")
 	flag.IntVar(&port, "port", 8080, "Port for SSE transport")
 	flag.IntVar(&port, "p", 8080, "Port for SSE transport")
+	flag.BoolVar(&showVersion, "version", false, "Show version information and exit")
+	flag.BoolVar(&showVersion, "v", false, "Show version information and exit")
+	flag.BoolVar(&showHelp, "help", false, "Show this help message and exit")
+	flag.BoolVar(&showHelp, "h", false, "Show this help message and exit")
+
 	flag.Parse()
+	
+	// Handle version flag
+	if showVersion {
+		printVersion()
+		os.Exit(0)
+	}
+	
+	// Handle help flag
+	if showHelp {
+		printUsage()
+		os.Exit(0)
+	}
 
 	// Create knowledge graph manager
 	manager := NewKnowledgeGraphManager(memory)
 
 	// Create a new MCP server
 	s := server.NewMCPServer(
-		"Memory Knowledge Graph",
-		"0.1.0",
+		appName,
+		version,
 		server.WithResourceCapabilities(true, true),
 		server.WithLogging(),
 	)
