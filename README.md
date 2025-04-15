@@ -13,6 +13,7 @@
 * **Observation System**: Add and remove observations about entities over time
 * **Powerful Search**: Find relevant nodes by name, type, or observation content
 * **Persistent Storage**: Data persists between sessions in a simple JSON format
+* **Flexible Transport Modes**: Supports both stdio (standard input/output) and SSE (Server-Sent Events) transport modes
 * **Cross-Platform**: Works on Linux, macOS, and Windows
 
 ## Available Tools
