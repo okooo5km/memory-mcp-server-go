@@ -1,0 +1,53 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Binary output directories
+bin/
+dist/
+.build/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories (remove the comment below if you want to ignore vendor/)
+# vendor/
+
+# IDE-specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+*.json       # Ignore JSON files (like memory.json)
+!sample.json # But keep sample.json if exists
+
+# Debug logs
+*.log
+
+# Release assets
+*.zip
+*.tar.gz
+
+# ai rules
+.rules
