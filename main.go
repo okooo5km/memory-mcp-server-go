@@ -10,215 +10,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"slices"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	
+	"memory-mcp-server-go/storage"
+	
+	// Use pure Go SQLite driver
+	_ "modernc.org/sqlite"
 )
 
-// Data structure definitions for knowledge graph
-type Entity struct {
-	Type         string   `json:"type"`
-	Name         string   `json:"name"`
-	EntityType   string   `json:"entityType"`
-	Observations []string `json:"observations"`
-}
-
-type Relation struct {
-	Type         string `json:"type"`
-	From         string `json:"from"`
-	To           string `json:"to"`
-	RelationType string `json:"relationType"`
-}
-
-type KnowledgeGraph struct {
-	Entities  []Entity   `json:"entities"`
-	Relations []Relation `json:"relations"`
-}
-
-// KnowledgeGraphManager contains all operations for interacting with the knowledge graph
-type KnowledgeGraphManager struct {
-	memoryPath string
-}
-
-// Create a new KnowledgeGraphManager
-func NewKnowledgeGraphManager(memory string) *KnowledgeGraphManager {
-	memoryPath := memory
-
-	// If memory parameter is empty, try environment variable
-	if memoryPath == "" {
-		memoryPath = os.Getenv("MEMORY_FILE_PATH")
-
-		// If env var is also empty, use default path
-		if memoryPath == "" {
-			// Default to save in current directory
-			execPath, err := os.Executable()
-			if err != nil {
-				execPath = "."
-			}
-			memoryPath = filepath.Join(filepath.Dir(execPath), "memory.json")
-		}
-	}
-
-	// If it's a relative path, use current directory as base
-	if !filepath.IsAbs(memoryPath) {
-		execPath, err := os.Executable()
-		if err != nil {
-			execPath = "."
-		}
-		memoryPath = filepath.Join(filepath.Dir(execPath), memoryPath)
-	}
-
-	return &KnowledgeGraphManager{
-		memoryPath: memoryPath,
-	}
-}
-
-// Load graph data
-func (m *KnowledgeGraphManager) loadGraph() (KnowledgeGraph, error) {
-	graph := KnowledgeGraph{
-		Entities:  []Entity{},
-		Relations: []Relation{},
-	}
-
-	// Check if file exists
-	_, err := os.Stat(m.memoryPath)
-	if os.IsNotExist(err) {
-		return graph, nil
-	}
-
-	// Read file content
-	data, err := os.ReadFile(m.memoryPath)
-	if err != nil {
-		return graph, err
-	}
-
-	if len(data) == 0 {
-		return graph, nil
-	}
-
-	// Parse line by line
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		var item map[string]any
-		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			continue
-		}
-
-		itemType, ok := item["type"].(string)
-		if !ok {
-			continue
-		}
-
-		if itemType == "entity" {
-			var entity Entity
-			if err := json.Unmarshal([]byte(line), &entity); err == nil {
-				graph.Entities = append(graph.Entities, entity)
-			}
-		} else if itemType == "relation" {
-			var relation Relation
-			if err := json.Unmarshal([]byte(line), &relation); err == nil {
-				graph.Relations = append(graph.Relations, relation)
-			}
-		}
-	}
-
-	return graph, nil
-}
-
-// Save graph data
-func (m *KnowledgeGraphManager) saveGraph(graph KnowledgeGraph) error {
-	// Prepare data to save
-	var lines []string
-	for _, entity := range graph.Entities {
-		entity.Type = "entity"
-		data, err := json.Marshal(entity)
-		if err != nil {
-			continue
-		}
-		lines = append(lines, string(data))
-	}
-
-	for _, relation := range graph.Relations {
-		relation.Type = "relation"
-		data, err := json.Marshal(relation)
-		if err != nil {
-			continue
-		}
-		lines = append(lines, string(data))
-	}
-
-	// Save to file
-	return os.WriteFile(m.memoryPath, []byte(strings.Join(lines, "\n")), 0644)
-}
-
-// CreateEntities creates multiple new entities
-func (m *KnowledgeGraphManager) CreateEntities(entities []Entity) ([]Entity, error) {
-	graph, err := m.loadGraph()
-	if err != nil {
-		return nil, err
-	}
-
-	var newEntities []Entity
-	for _, entity := range entities {
-		// Check if entity already exists
-		exists := false
-		for _, e := range graph.Entities {
-			if e.Name == entity.Name {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			entity.Type = "entity"
-			graph.Entities = append(graph.Entities, entity)
-			newEntities = append(newEntities, entity)
-		}
-	}
-
-	if err := m.saveGraph(graph); err != nil {
-		return nil, err
-	}
-	return newEntities, nil
-}
-
-// CreateRelations creates multiple new relations
-func (m *KnowledgeGraphManager) CreateRelations(relations []Relation) ([]Relation, error) {
-	graph, err := m.loadGraph()
-	if err != nil {
-		return nil, err
-	}
-
-	var newRelations []Relation
-	for _, relation := range relations {
-		// Check if relation already exists
-		exists := false
-		for _, r := range graph.Relations {
-			if r.From == relation.From && r.To == relation.To && r.RelationType == relation.RelationType {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			relation.Type = "relation"
-			graph.Relations = append(graph.Relations, relation)
-			newRelations = append(newRelations, relation)
-		}
-	}
-
-	if err := m.saveGraph(graph); err != nil {
-		return nil, err
-	}
-	return newRelations, nil
-}
-
-// AddObservations adds new observations to existing entities
+// Legacy types for backward compatibility with JSON marshaling
 type ObservationAddition struct {
 	EntityName string   `json:"entityName"`
 	Contents   []string `json:"contents"`
@@ -229,242 +32,255 @@ type ObservationAdditionResult struct {
 	AddedObservations []string `json:"addedObservations"`
 }
 
+// KnowledgeGraphManager manages the knowledge graph using the storage abstraction
+type KnowledgeGraphManager struct {
+	storage    storage.Storage
+	memoryPath string
+}
+
+// NewKnowledgeGraphManager creates a new manager with auto-detection of storage type
+func NewKnowledgeGraphManager(memoryPath string, storageType string, autoMigrate bool) (*KnowledgeGraphManager, error) {
+	// Resolve memory path
+	resolvedPath := resolveMemoryPath(memoryPath)
+	var finalPath string
+	
+	// Auto-detect storage type if not specified
+	if storageType == "" {
+		storageType, finalPath = detectStorageType(resolvedPath, autoMigrate)
+	} else {
+		finalPath = resolvedPath
+		// Handle SQLite path adjustment for explicit storage type
+		if storageType == "sqlite" && !strings.HasSuffix(resolvedPath, ".db") {
+			finalPath = strings.TrimSuffix(resolvedPath, filepath.Ext(resolvedPath)) + ".db"
+		}
+	}
+	
+	// Handle auto-migration BEFORE creating storage
+	if autoMigrate && storageType == "sqlite" && resolvedPath != finalPath {
+		// Check if we need to migrate
+		if _, err := os.Stat(resolvedPath); err == nil {
+			if _, err := os.Stat(finalPath); os.IsNotExist(err) {
+				log.Printf("Performing seamless migration from %s to %s...", resolvedPath, finalPath)
+				if err := performSeamlessMigration(resolvedPath, finalPath); err != nil {
+					log.Printf("Migration failed, falling back to JSONL: %v", err)
+					storageType = "jsonl"
+					finalPath = resolvedPath
+				} else {
+					log.Printf("Migration completed successfully! Now using SQLite for better performance.")
+				}
+			}
+		}
+	}
+	
+	// Create storage configuration
+	config := storage.Config{
+		Type:            storageType,
+		FilePath:        finalPath,
+		AutoMigrate:     autoMigrate,
+		MigrationBatch:  1000,
+		WALMode:         true,
+		CacheSize:       10000,
+		BusyTimeout:     5 * time.Second,
+	}
+	
+	// Create storage instance
+	store, err := storage.NewStorage(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage: %w", err)
+	}
+	
+	// Initialize storage
+	if err := store.Initialize(); err != nil {
+		return nil, fmt.Errorf("failed to initialize storage: %w", err)
+	}
+	
+	return &KnowledgeGraphManager{
+		storage:    store,
+		memoryPath: finalPath,
+	}, nil
+}
+
+// resolveMemoryPath resolves the memory file path using the same logic as the original
+func resolveMemoryPath(memory string) string {
+	memoryPath := memory
+	
+	// If memory parameter is empty, try environment variable
+	if memoryPath == "" {
+		memoryPath = os.Getenv("MEMORY_FILE_PATH")
+		
+		// If env var is also empty, use default path
+		if memoryPath == "" {
+			// Default to save in current directory
+			execPath, err := os.Executable()
+			if err != nil {
+				execPath = "."
+			}
+			memoryPath = filepath.Join(filepath.Dir(execPath), "memory.json")
+		}
+	}
+	
+	// If it's a relative path, use current directory as base
+	if !filepath.IsAbs(memoryPath) {
+		execPath, err := os.Executable()
+		if err != nil {
+			execPath = "."
+		}
+		memoryPath = filepath.Join(filepath.Dir(execPath), memoryPath)
+	}
+	
+	return memoryPath
+}
+
+// detectStorageType auto-detects the storage type and handles seamless migration
+func detectStorageType(memoryPath string, autoMigrate bool) (storageType string, finalPath string) {
+	ext := strings.ToLower(filepath.Ext(memoryPath))
+	
+	// If user specified a SQLite file, use it directly
+	if ext == ".db" || ext == ".sqlite" || ext == ".sqlite3" {
+		return "sqlite", memoryPath
+	}
+	
+	// Generate SQLite path from JSONL path
+	sqlitePath := strings.TrimSuffix(memoryPath, filepath.Ext(memoryPath)) + ".db"
+	
+	// Check if SQLite database already exists
+	if _, err := os.Stat(sqlitePath); err == nil {
+		log.Printf("Found existing SQLite database: %s", sqlitePath)
+		return "sqlite", sqlitePath
+	}
+	
+	// If auto-migrate is enabled and JSONL file exists, migrate to SQLite
+	if autoMigrate {
+		if _, err := os.Stat(memoryPath); err == nil {
+			log.Printf("Auto-migrating %s to SQLite for better performance...", memoryPath)
+			return "sqlite", sqlitePath // Return SQLite path for migration
+		}
+	}
+	
+	// Default to JSONL for new installations or when auto-migrate is disabled
+	return "jsonl", memoryPath
+}
+
+// performSeamlessMigration performs migration with minimal user disruption
+func performSeamlessMigration(jsonlPath, sqlitePath string) error {
+	config := storage.Config{MigrationBatch: 1000}
+	migrator := storage.NewMigrator(config)
+	
+	// Only show important progress, not every step
+	migrator.SetProgressCallback(func(current, total int, message string) {
+		if current == 30 || current == 90 || current == 100 {
+			log.Printf("Migration progress: %s", message)
+		}
+	})
+	
+	result, err := migrator.MigrateJSONLToSQLite(jsonlPath, sqlitePath)
+	if err != nil {
+		return fmt.Errorf("migration failed: %w", err)
+	}
+	
+	if result.Success {
+		log.Printf("Successfully migrated %d entities and %d relations", 
+			result.EntitiesCount, result.RelationsCount)
+	}
+	
+	return nil
+}
+
+// handleAutoMigration handles automatic migration from JSONL to SQLite (legacy function)
+func handleAutoMigration(jsonlPath, sqlitePath string) error {
+	// This function is now mostly unused as migration is handled in NewKnowledgeGraphManager
+	return performSeamlessMigration(jsonlPath, sqlitePath)
+}
+
+// Close closes the storage
+func (m *KnowledgeGraphManager) Close() error {
+	if m.storage != nil {
+		return m.storage.Close()
+	}
+	return nil
+}
+
+// CreateEntities creates multiple new entities
+func (m *KnowledgeGraphManager) CreateEntities(entities []storage.Entity) ([]storage.Entity, error) {
+	return m.storage.CreateEntities(entities)
+}
+
+// CreateRelations creates multiple new relations
+func (m *KnowledgeGraphManager) CreateRelations(relations []storage.Relation) ([]storage.Relation, error) {
+	return m.storage.CreateRelations(relations)
+}
+
+// AddObservations adds new observations to existing entities
 func (m *KnowledgeGraphManager) AddObservations(additions []ObservationAddition) ([]ObservationAdditionResult, error) {
-	graph, err := m.loadGraph()
+	// Convert to storage format
+	obsMap := make(map[string][]string)
+	for _, addition := range additions {
+		obsMap[addition.EntityName] = addition.Contents
+	}
+	
+	// Add observations
+	added, err := m.storage.AddObservations(obsMap)
 	if err != nil {
 		return nil, err
 	}
-
-	var results []ObservationAdditionResult
-	for _, addition := range additions {
-		var result ObservationAdditionResult
-		result.EntityName = addition.EntityName
-		result.AddedObservations = []string{}
-
-		// Find entity
-		entityFound := false
-		for i, entity := range graph.Entities {
-			if entity.Name == addition.EntityName {
-				entityFound = true
-
-				// Add non-duplicate observations
-				for _, content := range addition.Contents {
-					exists := slices.Contains(entity.Observations, content)
-					if !exists {
-						graph.Entities[i].Observations = append(graph.Entities[i].Observations, content)
-						result.AddedObservations = append(result.AddedObservations, content)
-					}
-				}
-				break
-			}
-		}
-
-		if !entityFound {
-			return nil, fmt.Errorf("entity %s not found", addition.EntityName)
-		}
-
-		results = append(results, result)
+	
+	// Convert back to legacy format
+	results := make([]ObservationAdditionResult, 0, len(added))
+	for entityName, addedObs := range added {
+		results = append(results, ObservationAdditionResult{
+			EntityName:        entityName,
+			AddedObservations: addedObs,
+		})
 	}
-
-	if err := m.saveGraph(graph); err != nil {
-		return nil, err
-	}
+	
 	return results, nil
 }
 
 // DeleteEntities deletes multiple entities and their associated relations
 func (m *KnowledgeGraphManager) DeleteEntities(entityNames []string) error {
-	graph, err := m.loadGraph()
-	if err != nil {
-		return err
-	}
-
-	// Create a set for quick entity name lookup
-	namesToDelete := make(map[string]bool)
-	for _, name := range entityNames {
-		namesToDelete[name] = true
-	}
-
-	// Filter entities
-	var filteredEntities []Entity
-	for _, entity := range graph.Entities {
-		if !namesToDelete[entity.Name] {
-			filteredEntities = append(filteredEntities, entity)
-		}
-	}
-	graph.Entities = filteredEntities
-
-	// Filter relations
-	var filteredRelations []Relation
-	for _, relation := range graph.Relations {
-		if !namesToDelete[relation.From] && !namesToDelete[relation.To] {
-			filteredRelations = append(filteredRelations, relation)
-		}
-	}
-	graph.Relations = filteredRelations
-
-	return m.saveGraph(graph)
+	return m.storage.DeleteEntities(entityNames)
 }
 
 // DeleteObservations deletes specific observations from entities
-type ObservationDeletion struct {
-	EntityName   string   `json:"entityName"`
-	Observations []string `json:"observations"`
-}
-
-func (m *KnowledgeGraphManager) DeleteObservations(deletions []ObservationDeletion) error {
-	graph, err := m.loadGraph()
-	if err != nil {
-		return err
-	}
-
-	for _, deletion := range deletions {
-		// Find entity
-		for i, entity := range graph.Entities {
-			if entity.Name == deletion.EntityName {
-				// Create set of observations to delete
-				obsToDelete := make(map[string]bool)
-				for _, obs := range deletion.Observations {
-					obsToDelete[obs] = true
-				}
-
-				// Filter observations
-				var filteredObs []string
-				for _, obs := range entity.Observations {
-					if !obsToDelete[obs] {
-						filteredObs = append(filteredObs, obs)
-					}
-				}
-				graph.Entities[i].Observations = filteredObs
-				break
-			}
-		}
-	}
-
-	return m.saveGraph(graph)
+func (m *KnowledgeGraphManager) DeleteObservations(deletions []storage.ObservationDeletion) error {
+	return m.storage.DeleteObservations(deletions)
 }
 
 // DeleteRelations deletes multiple relations
-func (m *KnowledgeGraphManager) DeleteRelations(relations []Relation) error {
-	graph, err := m.loadGraph()
-	if err != nil {
-		return err
-	}
-
-	var filteredRelations []Relation
-	for _, r1 := range graph.Relations {
-		shouldKeep := true
-		for _, r2 := range relations {
-			if r1.From == r2.From && r1.To == r2.To && r1.RelationType == r2.RelationType {
-				shouldKeep = false
-				break
-			}
-		}
-		if shouldKeep {
-			filteredRelations = append(filteredRelations, r1)
-		}
-	}
-	graph.Relations = filteredRelations
-
-	return m.saveGraph(graph)
+func (m *KnowledgeGraphManager) DeleteRelations(relations []storage.Relation) error {
+	return m.storage.DeleteRelations(relations)
 }
 
-// ReadGraph reads the entire knowledge graph
-func (m *KnowledgeGraphManager) ReadGraph() (KnowledgeGraph, error) {
-	return m.loadGraph()
+// ReadGraph returns the entire knowledge graph
+func (m *KnowledgeGraphManager) ReadGraph() (storage.KnowledgeGraph, error) {
+	graph, err := m.storage.ReadGraph()
+	if err != nil {
+		return storage.KnowledgeGraph{}, err
+	}
+	return *graph, nil
 }
 
 // SearchNodes searches for nodes in the knowledge graph based on a query
-func (m *KnowledgeGraphManager) SearchNodes(query string) (KnowledgeGraph, error) {
-	graph, err := m.loadGraph()
+func (m *KnowledgeGraphManager) SearchNodes(query string) (storage.KnowledgeGraph, error) {
+	graph, err := m.storage.SearchNodes(query)
 	if err != nil {
-		return KnowledgeGraph{}, err
+		return storage.KnowledgeGraph{}, err
 	}
-
-	query = strings.ToLower(query)
-	var filteredEntities []Entity
-
-	// Filter entities
-	for _, entity := range graph.Entities {
-		if strings.Contains(strings.ToLower(entity.Name), query) ||
-			strings.Contains(strings.ToLower(entity.EntityType), query) {
-			filteredEntities = append(filteredEntities, entity)
-			continue
-		}
-
-		// Check observations
-		for _, obs := range entity.Observations {
-			if strings.Contains(strings.ToLower(obs), query) {
-				filteredEntities = append(filteredEntities, entity)
-				break
-			}
-		}
-	}
-
-	// Create a set for quick entity name lookup
-	filteredEntityNames := make(map[string]bool)
-	for _, entity := range filteredEntities {
-		filteredEntityNames[entity.Name] = true
-	}
-
-	// Filter relations
-	var filteredRelations []Relation
-	for _, relation := range graph.Relations {
-		if filteredEntityNames[relation.From] && filteredEntityNames[relation.To] {
-			filteredRelations = append(filteredRelations, relation)
-		}
-	}
-
-	return KnowledgeGraph{
-		Entities:  filteredEntities,
-		Relations: filteredRelations,
-	}, nil
+	return *graph, nil
 }
 
 // OpenNodes opens specific nodes in the knowledge graph by their names
-func (m *KnowledgeGraphManager) OpenNodes(names []string) (KnowledgeGraph, error) {
-	graph, err := m.loadGraph()
+func (m *KnowledgeGraphManager) OpenNodes(names []string) (storage.KnowledgeGraph, error) {
+	graph, err := m.storage.OpenNodes(names)
 	if err != nil {
-		return KnowledgeGraph{}, err
+		return storage.KnowledgeGraph{}, err
 	}
-
-	// Create a set for quick name lookup
-	nameSet := make(map[string]bool)
-	for _, name := range names {
-		nameSet[name] = true
-	}
-
-	// Filter entities
-	var filteredEntities []Entity
-	for _, entity := range graph.Entities {
-		if nameSet[entity.Name] {
-			filteredEntities = append(filteredEntities, entity)
-		}
-	}
-
-	// Create a set for quick filtered entity name lookup
-	filteredEntityNames := make(map[string]bool)
-	for _, entity := range filteredEntities {
-		filteredEntityNames[entity.Name] = true
-	}
-
-	// Filter relations
-	var filteredRelations []Relation
-	for _, relation := range graph.Relations {
-		if filteredEntityNames[relation.From] && filteredEntityNames[relation.To] {
-			filteredRelations = append(filteredRelations, relation)
-		}
-	}
-
-	return KnowledgeGraph{
-		Entities:  filteredEntities,
-		Relations: filteredRelations,
-	}, nil
+	return *graph, nil
 }
 
 // Version information
 const (
-	version = "0.1.0"
+	version = "0.2.0"
 	appName = "Memory MCP Server"
 )
 
@@ -487,6 +303,12 @@ func main() {
 	var port int = 8080
 	var showVersion bool
 	var showHelp bool
+	var storageType string
+	var autoMigrate bool
+	var migrate string
+	var migrateTo string
+	var dryRun bool
+	var force bool
 
 	// Override the default usage message
 	flag.Usage = printUsage
@@ -502,6 +324,14 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "Show version information and exit")
 	flag.BoolVar(&showHelp, "help", false, "Show this help message and exit")
 	flag.BoolVar(&showHelp, "h", false, "Show this help message and exit")
+	
+	// New storage-related flags
+	flag.StringVar(&storageType, "storage", "", "Storage type (sqlite or jsonl, auto-detected if not specified)")
+	flag.BoolVar(&autoMigrate, "auto-migrate", true, "Automatically migrate from JSONL to SQLite")
+	flag.StringVar(&migrate, "migrate", "", "Migrate data from JSONL file to SQLite")
+	flag.StringVar(&migrateTo, "migrate-to", "", "Destination SQLite file for migration")
+	flag.BoolVar(&dryRun, "dry-run", false, "Perform a dry run of migration")
+	flag.BoolVar(&force, "force", false, "Force overwrite destination file during migration")
 
 	flag.Parse()
 	
@@ -516,9 +346,34 @@ func main() {
 		printUsage()
 		os.Exit(0)
 	}
+	
+	// Handle migration command
+	if migrate != "" {
+		if migrateTo == "" {
+			migrateTo = strings.TrimSuffix(migrate, filepath.Ext(migrate)) + ".db"
+		}
+		
+		cmd := storage.MigrateCommand{
+			Source:      migrate,
+			Destination: migrateTo,
+			DryRun:      dryRun,
+			Force:       force,
+			Verbose:     true,
+		}
+		
+		if err := storage.ExecuteMigration(cmd); err != nil {
+			log.Fatalf("Migration failed: %v", err)
+		}
+		
+		os.Exit(0)
+	}
 
 	// Create knowledge graph manager
-	manager := NewKnowledgeGraphManager(memory)
+	manager, err := NewKnowledgeGraphManager(memory, storageType, autoMigrate)
+	if err != nil {
+		log.Fatalf("Failed to create knowledge graph manager: %v", err)
+	}
+	defer manager.Close()
 
 	// Create a new MCP server
 	s := server.NewMCPServer(
@@ -710,7 +565,7 @@ func main() {
 		}
 
 		// Convert parameters to entity list
-		var entities []Entity
+		var entities []storage.Entity
 		data, err := json.Marshal(args)
 		if err != nil {
 			return nil, err
@@ -741,7 +596,7 @@ func main() {
 		}
 
 		// Convert parameters to relation list
-		var relations []Relation
+		var relations []storage.Relation
 		data, err := json.Marshal(args)
 		if err != nil {
 			return nil, err
@@ -827,7 +682,7 @@ func main() {
 		}
 
 		// Convert parameters to observation deletion list
-		var deletions []ObservationDeletion
+		var deletions []storage.ObservationDeletion
 		data, err := json.Marshal(args)
 		if err != nil {
 			return nil, err
@@ -851,7 +706,7 @@ func main() {
 		}
 
 		// Convert parameters to relation list
-		var relations []Relation
+		var relations []storage.Relation
 		data, err := json.Marshal(args)
 		if err != nil {
 			return nil, err

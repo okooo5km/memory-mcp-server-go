@@ -40,6 +40,9 @@ Thumbs.db
 
 # Project specific
 *.json       # Ignore JSON files (like memory.json)
+*.db         # Ignore SQLite database files
+*.sqlite     # Ignore SQLite database files
+*.sqlite3    # Ignore SQLite database files
 !sample.json # But keep sample.json if exists
 
 # Debug logs
@@ -49,5 +52,6 @@ Thumbs.db
 *.zip
 *.tar.gz
 
-# ai rules
+# AI rules and personal files
 .rules
+.claude/
