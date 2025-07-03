@@ -335,6 +335,15 @@ func main() {
 
 	flag.Parse()
 	
+	// In stdio mode, ensure logging doesn't interfere with MCP JSON-RPC
+	if transport == "stdio" {
+		// Set environment variable to track stdio mode for suppressing logs
+		os.Setenv("MCP_TRANSPORT", "stdio")
+		// Log output already goes to stderr by default, which is fine
+		// But we should suppress non-critical logging in stdio mode
+		log.SetOutput(os.Stderr)
+	}
+	
 	// Handle version flag
 	if showVersion {
 		printVersion()

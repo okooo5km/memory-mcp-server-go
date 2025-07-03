@@ -58,7 +58,8 @@ func (s *SQLiteStorage) Initialize() error {
 	// Try to create FTS schema (optional, will fallback to regular search if it fails)
 	if err = s.createFTSSchema(); err != nil {
 		// Log warning but don't fail initialization
-		fmt.Printf("Warning: FTS5 not available, falling back to basic search: %v\n", err)
+		// Silently fallback - don't print to stdout in MCP mode
+		// FTS5 is optional, basic search will work fine
 	}
 	
 	return nil
@@ -465,7 +466,7 @@ func (s *SQLiteStorage) SearchNodes(query string) (*KnowledgeGraph, error) {
 			return result, nil
 		}
 		// Log FTS error but continue with basic search
-		fmt.Printf("FTS search failed, falling back to basic search: %v\n", err)
+		// Silently fallback - don't print to stdout in MCP mode
 	}
 	
 	// Always use basic search as fallback
