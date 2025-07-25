@@ -71,7 +71,8 @@ Download the binary for your platform from the [GitHub Releases](https://github.
 <details>
 <summary><b>macOS Installation</b></summary>
 
-#### macOS with Apple Silicon (M1/M2/M3):
+#### macOS with Apple Silicon (M1/M2/M3)
+
 ```bash
 # Download the arm64 version
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-macos-arm64.zip -o memory-mcp-server.zip
@@ -87,7 +88,8 @@ mv memory-mcp-server-go ~/.local/bin/
 rm memory-mcp-server.zip
 ```
 
-#### macOS with Intel Processor:
+#### macOS with Intel Processor
+
 ```bash
 # Download the x86_64 version
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-macos-x86_64.zip -o memory-mcp-server.zip
@@ -103,7 +105,8 @@ mv memory-mcp-server-go ~/.local/bin/
 rm memory-mcp-server.zip
 ```
 
-#### macOS Universal Binary (works on both Apple Silicon and Intel):
+#### macOS Universal Binary (works on both Apple Silicon and Intel)
+
 ```bash
 # Download the universal version
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-macos-universal.zip -o memory-mcp-server.zip
@@ -123,7 +126,8 @@ rm memory-mcp-server.zip
 <details>
 <summary><b>Linux Installation</b></summary>
 
-#### Linux on x86_64 (most common):
+#### Linux on x86_64 (most common)
+
 ```bash
 # Download the amd64 version
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-amd64.tar.gz -o memory-mcp-server.tar.gz
@@ -136,7 +140,8 @@ mv memory-mcp-server-go ~/.local/bin/
 rm memory-mcp-server.tar.gz
 ```
 
-#### Linux on ARM64 (e.g., Raspberry Pi 4, AWS Graviton):
+#### Linux on ARM64 (e.g., Raspberry Pi 4, AWS Graviton)
+
 ```bash
 # Download the arm64 version
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-arm64.tar.gz -o memory-mcp-server.tar.gz
@@ -153,21 +158,23 @@ rm memory-mcp-server.tar.gz
 <details>
 <summary><b>Windows Installation</b></summary>
 
-#### Windows on x86_64 (most common):
-- Download the [Windows AMD64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-windows-amd64.zip)
-- Extract the ZIP file
-- Move the `memory-mcp-server-go.exe` to a location in your PATH
+#### Windows on x86_64 (most common)
 
-#### Windows on ARM64 (e.g., Windows on ARM devices):
-- Download the [Windows ARM64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-windows-arm64.zip)
-- Extract the ZIP file
-- Move the `memory-mcp-server-go.exe` to a location in your PATH
+* Download the [Windows AMD64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-windows-amd64.zip)
+* Extract the ZIP file
+* Move the `memory-mcp-server-go.exe` to a location in your PATH
+
+#### Windows on ARM64 (e.g., Windows on ARM devices)
+
+* Download the [Windows ARM64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-windows-arm64.zip)
+* Extract the ZIP file
+* Move the `memory-mcp-server-go.exe` to a location in your PATH
 </details>
 
 Make sure the installation directory is in your PATH:
 
-- **macOS/Linux**: Add `export PATH="$HOME/.local/bin:$PATH"` to your shell configuration file (`.bashrc`, `.zshrc`, etc.)
-- **Windows**: Add the directory to your system PATH through the System Properties > Environment Variables dialog
+* **macOS/Linux**: Add `export PATH="$HOME/.local/bin:$PATH"` to your shell configuration file (`.bashrc`, `.zshrc`, etc.)
+* **Windows**: Add the directory to your system PATH through the System Properties > Environment Variables dialog
 
 ### Option 2: Build from Source
 
@@ -181,6 +188,7 @@ Make sure the installation directory is in your PATH:
 2. Build the project:
 
    **Using Make (recommended):**
+
    ```bash
    # Build for your current platform
    make
@@ -191,10 +199,11 @@ Make sure the installation directory is in your PATH:
    # Create distribution packages for all platforms
    make dist
    ```
-   
+
    The binaries will be placed in the `.build` directory. All builds use pure Go SQLite for maximum compatibility.
 
    **Using Go directly:**
+
    ```bash
    go build
    ```
@@ -253,25 +262,25 @@ memory-mcp-server-go --transport sse --port 9000
 
 The Memory MCP Server automatically detects and upgrades your storage for optimal performance:
 
-- **New installations**: Start with SQLite by default for best performance
-- **Existing JSONL users**: Automatic migration to SQLite on first run
-- **Seamless transition**: Your original commands continue to work unchanged
-- **Backup safety**: Original files are preserved during migration
+* **New installations**: Start with SQLite by default for best performance
+* **Existing JSONL users**: Automatic migration to SQLite on first run
+* **Seamless transition**: Your original commands continue to work unchanged
+* **Backup safety**: Original files are preserved during migration
 
 ### Storage Types
 
 1. **SQLite** (Recommended)
-   - 🚀 **1.9x faster** read and search performance
-   - 🧠 **1.9x more memory efficient**
-   - 💪 ACID transactions and data integrity
-   - 🔍 Advanced search capabilities with FTS5
-   - 📊 Better for datasets with >100 entities
+   * 🚀 **1.9x faster** read and search performance
+   * 🧠 **1.9x more memory efficient**
+   * 💪 ACID transactions and data integrity
+   * 🔍 Advanced search capabilities with FTS5
+   * 📊 Better for datasets with >100 entities
 
 2. **JSONL** (Legacy)
-   - 📁 **3x smaller** file sizes
-   - ⚡ **55x faster** startup time
-   - 📝 Human-readable text format
-   - 🔧 Good for simple datasets <50 entities
+   * 📁 **3x smaller** file sizes
+   * ⚡ **55x faster** startup time
+   * 📝 Human-readable text format
+   * 🔧 Good for simple datasets <50 entities
 
 ### Memory File Storage Path
 
@@ -282,6 +291,7 @@ The server determines storage location using the following priority rules:
 3. **Default location**: `memory.json` in the same directory as the executable
 
 **Path handling rules:**
+
 * Absolute paths (e.g., `/home/user/data/memory.json`) are used as-is
 * Relative paths (e.g., `custom/memory.json`) are resolved relative to the executable's directory
 * SQLite files automatically use `.db` extension (e.g., `memory.json` → `memory.db`)
@@ -324,7 +334,7 @@ Add the following configuration to your Cursor editor's Settings - mcp.json:
 
 You can use the following system prompt to help Claude utilize the memory-mcp-server effectively:
 
-```
+```text
 You have access to a Knowledge Graph memory system, which can store and retrieve information across conversations. Use it to remember important details about the user, their preferences, and any facts they've shared.
 
 When you discover important information, save it using memory tools:
@@ -457,6 +467,7 @@ memory-mcp-server-go is licensed under the MIT License. This means you are free 
 If you're currently using the JSONL format, the server will automatically migrate your data:
 
 1. **Automatic Migration** (Recommended)
+
    ```bash
    # Your existing command continues to work
    memory-mcp-server-go --memory /path/to/your/memory.json
@@ -464,6 +475,7 @@ If you're currently using the JSONL format, the server will automatically migrat
    ```
 
 2. **Manual Migration**
+
    ```bash
    # Migrate specific files
    memory-mcp-server-go --migrate /path/to/memory.json --migrate-to /path/to/memory.db
@@ -473,6 +485,7 @@ If you're currently using the JSONL format, the server will automatically migrat
    ```
 
 3. **Force Storage Type**
+
    ```bash
    # Skip auto-detection, use SQLite directly
    memory-mcp-server-go --storage sqlite --memory /path/to/memory.db
@@ -487,9 +500,9 @@ A high-performance Go implementation of a knowledge graph memory server for Mode
 
 ### Key Improvements over TypeScript Version
 
-- 🚀 **1.9x faster** read and search operations
-- 🧠 **1.9x more memory efficient**
-- 📦 **Pure Go SQLite** - no CGO dependencies
-- 🔄 **Automatic migration** from JSONL format
-- 🔍 **Advanced search** with FTS5 and fallback
-- 🌍 **Cross-platform** builds on macOS without Docker
+* 🚀 **1.9x faster** read and search operations
+* 🧠 **1.9x more memory efficient**
+* 📦 **Pure Go SQLite** - no CGO dependencies
+* 🔄 **Automatic migration** from JSONL format
+* 🔍 **Advanced search** with FTS5 and fallback
+* 🌍 **Cross-platform** builds on macOS without Docker

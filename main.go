@@ -186,11 +186,6 @@ func performSeamlessMigration(jsonlPath, sqlitePath string) error {
 	return nil
 }
 
-// handleAutoMigration handles automatic migration from JSONL to SQLite (legacy function)
-func handleAutoMigration(jsonlPath, sqlitePath string) error {
-	// This function is now mostly unused as migration is handled in NewKnowledgeGraphManager
-	return performSeamlessMigration(jsonlPath, sqlitePath)
-}
 
 // Close closes the storage
 func (m *KnowledgeGraphManager) Close() error {
@@ -800,17 +795,20 @@ func main() {
 		return mcp.NewToolResultText(string(resultJSON)), nil
 	})
 
-	if transport == "stdio" {
+	switch transport {
+	case "stdio":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on stdio")
 		if err := server.ServeStdio(s); err != nil {
 			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		}
-	} else if transport == "sse" {
+	case "sse":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on SSE")
 		sseServer := server.NewSSEServer(s, server.WithBaseURL(fmt.Sprintf("http://localhost:%d", port)))
 		log.Printf("Server started listening on :%d\n", port)
 		if err := sseServer.Start(fmt.Sprintf(":%d", port)); err != nil {
 			log.Fatalf("Failed to start server: %v", err)
 		}
+	default:
+		log.Fatalf("Invalid transport: %s", transport)
 	}
 }
