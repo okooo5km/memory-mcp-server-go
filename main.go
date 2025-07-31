@@ -274,7 +274,7 @@ func (m *KnowledgeGraphManager) OpenNodes(names []string) (storage.KnowledgeGrap
 
 // Version information
 const (
-	version = "0.2.1"
+	version = "0.2.2"
 	appName = "Memory MCP Server"
 )
 
