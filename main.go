@@ -14,9 +14,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	
+
 	"memory-mcp-server-go/storage"
-	
+
 	// Use pure Go SQLite driver
 	_ "modernc.org/sqlite"
 )
@@ -43,7 +43,7 @@ func NewKnowledgeGraphManager(memoryPath string, storageType string, autoMigrate
 	// Resolve memory path
 	resolvedPath := resolveMemoryPath(memoryPath)
 	var finalPath string
-	
+
 	// Auto-detect storage type if not specified
 	if storageType == "" {
 		storageType, finalPath = detectStorageType(resolvedPath, autoMigrate)
@@ -54,7 +54,7 @@ func NewKnowledgeGraphManager(memoryPath string, storageType string, autoMigrate
 			finalPath = strings.TrimSuffix(resolvedPath, filepath.Ext(resolvedPath)) + ".db"
 		}
 	}
-	
+
 	// Handle auto-migration BEFORE creating storage
 	if autoMigrate && storageType == "sqlite" && resolvedPath != finalPath {
 		// Check if we need to migrate
@@ -71,29 +71,29 @@ func NewKnowledgeGraphManager(memoryPath string, storageType string, autoMigrate
 			}
 		}
 	}
-	
+
 	// Create storage configuration
 	config := storage.Config{
-		Type:            storageType,
-		FilePath:        finalPath,
-		AutoMigrate:     autoMigrate,
-		MigrationBatch:  1000,
-		WALMode:         true,
-		CacheSize:       10000,
-		BusyTimeout:     5 * time.Second,
+		Type:           storageType,
+		FilePath:       finalPath,
+		AutoMigrate:    autoMigrate,
+		MigrationBatch: 1000,
+		WALMode:        true,
+		CacheSize:      10000,
+		BusyTimeout:    5 * time.Second,
 	}
-	
+
 	// Create storage instance
 	store, err := storage.NewStorage(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	
+
 	// Initialize storage
 	if err := store.Initialize(); err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
-	
+
 	return &KnowledgeGraphManager{
 		storage:    store,
 		memoryPath: finalPath,
@@ -103,11 +103,11 @@ func NewKnowledgeGraphManager(memoryPath string, storageType string, autoMigrate
 // resolveMemoryPath resolves the memory file path using the same logic as the original
 func resolveMemoryPath(memory string) string {
 	memoryPath := memory
-	
+
 	// If memory parameter is empty, try environment variable
 	if memoryPath == "" {
 		memoryPath = os.Getenv("MEMORY_FILE_PATH")
-		
+
 		// If env var is also empty, use default path
 		if memoryPath == "" {
 			// Default to save in current directory
@@ -118,7 +118,7 @@ func resolveMemoryPath(memory string) string {
 			memoryPath = filepath.Join(filepath.Dir(execPath), "memory.json")
 		}
 	}
-	
+
 	// If it's a relative path, use current directory as base
 	if !filepath.IsAbs(memoryPath) {
 		execPath, err := os.Executable()
@@ -127,28 +127,28 @@ func resolveMemoryPath(memory string) string {
 		}
 		memoryPath = filepath.Join(filepath.Dir(execPath), memoryPath)
 	}
-	
+
 	return memoryPath
 }
 
 // detectStorageType auto-detects the storage type and handles seamless migration
 func detectStorageType(memoryPath string, autoMigrate bool) (storageType string, finalPath string) {
 	ext := strings.ToLower(filepath.Ext(memoryPath))
-	
+
 	// If user specified a SQLite file, use it directly
 	if ext == ".db" || ext == ".sqlite" || ext == ".sqlite3" {
 		return "sqlite", memoryPath
 	}
-	
+
 	// Generate SQLite path from JSONL path
 	sqlitePath := strings.TrimSuffix(memoryPath, filepath.Ext(memoryPath)) + ".db"
-	
+
 	// Check if SQLite database already exists
 	if _, err := os.Stat(sqlitePath); err == nil {
 		log.Printf("Found existing SQLite database: %s", sqlitePath)
 		return "sqlite", sqlitePath
 	}
-	
+
 	// If auto-migrate is enabled and JSONL file exists, migrate to SQLite
 	if autoMigrate {
 		if _, err := os.Stat(memoryPath); err == nil {
@@ -156,7 +156,7 @@ func detectStorageType(memoryPath string, autoMigrate bool) (storageType string,
 			return "sqlite", sqlitePath // Return SQLite path for migration
 		}
 	}
-	
+
 	// Default to JSONL for new installations or when auto-migrate is disabled
 	return "jsonl", memoryPath
 }
@@ -165,27 +165,26 @@ func detectStorageType(memoryPath string, autoMigrate bool) (storageType string,
 func performSeamlessMigration(jsonlPath, sqlitePath string) error {
 	config := storage.Config{MigrationBatch: 1000}
 	migrator := storage.NewMigrator(config)
-	
+
 	// Only show important progress, not every step
 	migrator.SetProgressCallback(func(current, total int, message string) {
 		if current == 30 || current == 90 || current == 100 {
 			log.Printf("Migration progress: %s", message)
 		}
 	})
-	
+
 	result, err := migrator.MigrateJSONLToSQLite(jsonlPath, sqlitePath)
 	if err != nil {
 		return fmt.Errorf("migration failed: %w", err)
 	}
-	
+
 	if result.Success {
-		log.Printf("Successfully migrated %d entities and %d relations", 
+		log.Printf("Successfully migrated %d entities and %d relations",
 			result.EntitiesCount, result.RelationsCount)
 	}
-	
+
 	return nil
 }
-
 
 // Close closes the storage
 func (m *KnowledgeGraphManager) Close() error {
@@ -212,13 +211,13 @@ func (m *KnowledgeGraphManager) AddObservations(additions []ObservationAddition)
 	for _, addition := range additions {
 		obsMap[addition.EntityName] = addition.Contents
 	}
-	
+
 	// Add observations
 	added, err := m.storage.AddObservations(obsMap)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Convert back to legacy format
 	results := make([]ObservationAdditionResult, 0, len(added))
 	for entityName, addedObs := range added {
@@ -227,7 +226,7 @@ func (m *KnowledgeGraphManager) AddObservations(additions []ObservationAddition)
 			AddedObservations: addedObs,
 		})
 	}
-	
+
 	return results, nil
 }
 
@@ -275,7 +274,7 @@ func (m *KnowledgeGraphManager) OpenNodes(names []string) (storage.KnowledgeGrap
 
 // Version information
 const (
-	version = "0.2.0"
+	version = "0.2.1"
 	appName = "Memory MCP Server"
 )
 
@@ -319,7 +318,7 @@ func main() {
 	flag.BoolVar(&showVersion, "v", false, "Show version information and exit")
 	flag.BoolVar(&showHelp, "help", false, "Show this help message and exit")
 	flag.BoolVar(&showHelp, "h", false, "Show this help message and exit")
-	
+
 	// New storage-related flags
 	flag.StringVar(&storageType, "storage", "", "Storage type (sqlite or jsonl, auto-detected if not specified)")
 	flag.BoolVar(&autoMigrate, "auto-migrate", true, "Automatically migrate from JSONL to SQLite")
@@ -329,7 +328,7 @@ func main() {
 	flag.BoolVar(&force, "force", false, "Force overwrite destination file during migration")
 
 	flag.Parse()
-	
+
 	// In stdio mode, ensure logging doesn't interfere with MCP JSON-RPC
 	if transport == "stdio" {
 		// Set environment variable to track stdio mode for suppressing logs
@@ -338,25 +337,25 @@ func main() {
 		// But we should suppress non-critical logging in stdio mode
 		log.SetOutput(os.Stderr)
 	}
-	
+
 	// Handle version flag
 	if showVersion {
 		printVersion()
 		os.Exit(0)
 	}
-	
+
 	// Handle help flag
 	if showHelp {
 		printUsage()
 		os.Exit(0)
 	}
-	
+
 	// Handle migration command
 	if migrate != "" {
 		if migrateTo == "" {
 			migrateTo = strings.TrimSuffix(migrate, filepath.Ext(migrate)) + ".db"
 		}
-		
+
 		cmd := storage.MigrateCommand{
 			Source:      migrate,
 			Destination: migrateTo,
@@ -364,11 +363,11 @@ func main() {
 			Force:       force,
 			Verbose:     true,
 		}
-		
+
 		if err := storage.ExecuteMigration(cmd); err != nil {
 			log.Fatalf("Migration failed: %v", err)
 		}
-		
+
 		os.Exit(0)
 	}
 
@@ -537,24 +536,24 @@ func main() {
 
 	// Add read_graph tool
 	readGraphTool := mcp.NewTool("read_graph",
-		mcp.WithDescription("Read the entire knowledge graph"),
+		mcp.WithDescription("Read the entire knowledge graph. WARNING: Can be slow and memory-intensive for large graphs. Consider using search_nodes or open_nodes for specific queries instead. Use this when you need a complete overview or full backup of the graph"),
 	)
 
 	// Add search_nodes tool
 	searchNodesTool := mcp.NewTool("search_nodes",
-		mcp.WithDescription("Search for nodes in the knowledge graph based on a query"),
+		mcp.WithDescription("Search nodes in the knowledge graph. IMPORTANT: Multiple words with spaces become exact phrase search (e.g., 'product idea' only finds exact phrase). For broader results, search single core words separately. Best practice: Split compound queries - instead of '产品idea' search 'product' OR 'idea'; instead of '近视参数' search '近视'; instead of 'user feedback' search 'user' OR 'feedback'"),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("The search query to match against entity names, types, and observation content"),
+			mcp.Description("Search query. BEHAVIOR: Single word = prefix match (e.g., 'prod' finds product*). Multiple words = exact phrase (e.g., 'product idea' requires both words together). STRATEGY: Use single words for broader results. Examples: '产品' (not '产品idea'), 'idea' (finds idea/ideas), '近视' (not '近视参数'), 'feedback' (not 'user feedback')"),
 		),
 	)
 
 	// Add open_nodes tool
 	openNodesTool := mcp.NewTool("open_nodes",
-		mcp.WithDescription("Open specific nodes in the knowledge graph by their names"),
+		mcp.WithDescription("Retrieve specific nodes by exact name match. Use this when you know the precise entity names. For fuzzy/partial matching, use search_nodes instead. Example: open_nodes(['Orchard']) retrieves only the entity named 'Orchard', not 'Orchard Inc' or 'Orchard产品'"),
 		mcp.WithArray("names",
 			mcp.Required(),
-			mcp.Description("An array of entity names to retrieve"),
+			mcp.Description("Array of exact entity names to retrieve. Must match exactly. For partial matches, use search_nodes first to find the exact names"),
 			mcp.Items(map[string]any{
 				"type": "string",
 			}),
