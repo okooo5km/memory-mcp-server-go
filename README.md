@@ -63,7 +63,22 @@
 
 ## Installation
 
-### Option 1: Download Pre-built Binary
+### Option 1: Quick Install (macOS/Linux)
+
+Install the latest version with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash
+```
+
+Options:
+
+- Specific version: `curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash -s -- -v v0.2.3`
+- Custom install dir: `... | bash -s -- -d /usr/local/bin`
+
+Note: Windows users, please see the Windows section below.
+
+### Option 2: Download Pre-built Binary
 
 Download the latest pre-built binary for your platform from the [GitHub Releases](https://github.com/okooo5km/memory-mcp-server-go/releases/latest) page:
 
@@ -78,14 +93,16 @@ Download the binary for your platform from the [GitHub Releases](https://github.
 # Download the arm64 build (.tgz)
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-darwin-arm64.tgz -o memory-mcp-server.tgz
 tar -xzf memory-mcp-server.tgz
-chmod +x memory-mcp-server-go
+# Extracted binary is platform-named (e.g., memory-mcp-server-go-darwin-arm64)
+BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
+chmod +x "$BIN"
 
 # Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine memory-mcp-server-go || true
+xattr -d com.apple.quarantine "$BIN" || true
 
-# Install to your local bin directory
+# Install to your local bin directory with a unified name
 mkdir -p ~/.local/bin
-mv memory-mcp-server-go ~/.local/bin/
+mv "$BIN" ~/.local/bin/memory-mcp-server-go
 rm memory-mcp-server.tgz
 ```
 
@@ -95,14 +112,15 @@ rm memory-mcp-server.tgz
 # Download the x86_64 build (.tgz)
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-darwin-amd64.tgz -o memory-mcp-server.tgz
 tar -xzf memory-mcp-server.tgz
-chmod +x memory-mcp-server-go
+BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
+chmod +x "$BIN"
 
 # Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine memory-mcp-server-go || true
+xattr -d com.apple.quarantine "$BIN" || true
 
-# Install to your local bin directory
+# Install to your local bin directory with a unified name
 mkdir -p ~/.local/bin
-mv memory-mcp-server-go ~/.local/bin/
+mv "$BIN" ~/.local/bin/memory-mcp-server-go
 rm memory-mcp-server.tgz
 ```
 
@@ -119,11 +137,12 @@ rm memory-mcp-server.tgz
 # Download the amd64 build (.tgz)
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-amd64.tgz -o memory-mcp-server.tgz
 tar -xzf memory-mcp-server.tgz
-chmod +x memory-mcp-server-go
+BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
+chmod +x "$BIN"
 
-# Install to your local bin directory
+# Install to your local bin directory with a unified name
 mkdir -p ~/.local/bin
-mv memory-mcp-server-go ~/.local/bin/
+mv "$BIN" ~/.local/bin/memory-mcp-server-go
 rm memory-mcp-server.tgz
 ```
 
@@ -133,11 +152,12 @@ rm memory-mcp-server.tgz
 # Download the arm64 build (.tgz)
 curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-arm64.tgz -o memory-mcp-server.tgz
 tar -xzf memory-mcp-server.tgz
-chmod +x memory-mcp-server-go
+BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
+chmod +x "$BIN"
 
-# Install to your local bin directory
+# Install to your local bin directory with a unified name
 mkdir -p ~/.local/bin
-mv memory-mcp-server-go ~/.local/bin/
+mv "$BIN" ~/.local/bin/memory-mcp-server-go
 rm memory-mcp-server.tgz
 ```
 
@@ -173,7 +193,7 @@ cd ~/.local/bin/..  # where you downloaded the artifact
 shasum -a 256 -c SHA256SUMS.txt | grep memory-mcp-server-go || true
 ```
 
-### Option 2: Build from Source
+### Option 3: Build from Source
 
 1. Clone the repository:
 
