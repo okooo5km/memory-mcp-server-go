@@ -8,8 +8,8 @@ import (
 
 // FTSConfig holds FTS5 configuration
 type FTSConfig struct {
-	Enabled    bool
-	Tokenizer  string // porter, unicode61, etc.
+	Enabled          bool
+	Tokenizer        string // porter, unicode61, etc.
 	RemoveDiacritics bool
 }
 
@@ -91,7 +91,7 @@ func (s *SQLiteStorage) rebuildFTSIndex() error {
 		}
 	}
 
-	// Populate observations FTS manually  
+	// Populate observations FTS manually
 	_, err = s.db.Exec(`
 		INSERT INTO observations_fts(rowid, content, entity_name)
 		SELECT o.id, o.content, e.name 
@@ -272,23 +272,23 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string) (*KnowledgeGraph, error
 func prepareFTSQuery(query string) string {
 	// Escape special FTS characters
 	query = strings.ReplaceAll(query, `"`, `""`)
-	
+
 	// Split into words and create a phrase query or AND query
 	words := strings.Fields(query)
 	if len(words) == 0 {
 		return `""`
 	}
-	
+
 	if len(words) == 1 {
 		// Single word - use prefix matching
 		return fmt.Sprintf(`%s*`, words[0])
 	}
-	
+
 	// Multiple words - try phrase search first, fallback to AND
 	if len(strings.Join(words, " ")) < 50 { // Reasonable phrase length
 		return fmt.Sprintf(`"%s"`, strings.Join(words, " "))
 	}
-	
+
 	// Long query - use AND of individual words
 	return strings.Join(words, " AND ")
 }
@@ -298,9 +298,9 @@ func (s *SQLiteStorage) GetSearchSuggestions(partial string, limit int) ([]strin
 	if limit <= 0 {
 		limit = 10
 	}
-	
+
 	suggestions := []string{}
-	
+
 	// Get entity name suggestions
 	query := `
 		SELECT DISTINCT name
@@ -309,20 +309,20 @@ func (s *SQLiteStorage) GetSearchSuggestions(partial string, limit int) ([]strin
 		ORDER BY name
 		LIMIT ?
 	`
-	
+
 	rows, err := s.db.Query(query, partial+"%", limit/2)
 	if err != nil {
 		return suggestions, err
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err == nil {
 			suggestions = append(suggestions, name)
 		}
 	}
-	
+
 	// Get entity type suggestions
 	query = `
 		SELECT DISTINCT entity_type
@@ -331,49 +331,49 @@ func (s *SQLiteStorage) GetSearchSuggestions(partial string, limit int) ([]strin
 		ORDER BY entity_type
 		LIMIT ?
 	`
-	
+
 	rows, err = s.db.Query(query, partial+"%", limit-len(suggestions))
 	if err != nil {
 		return suggestions, err
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var entityType string
 		if err := rows.Scan(&entityType); err == nil {
 			suggestions = append(suggestions, entityType)
 		}
 	}
-	
+
 	return suggestions, nil
 }
 
 // AnalyzeGraph provides analytics about the knowledge graph
 func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 	analysis := make(map[string]interface{})
-	
+
 	// Total counts
 	var entityCount, relationCount, observationCount int
-	
+
 	err := s.db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&entityCount)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	err = s.db.QueryRow("SELECT COUNT(*) FROM relations").Scan(&relationCount)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	err = s.db.QueryRow("SELECT COUNT(*) FROM observations").Scan(&observationCount)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	analysis["entity_count"] = entityCount
 	analysis["relation_count"] = relationCount
 	analysis["observation_count"] = observationCount
-	
+
 	// Entity type distribution
 	entityTypes := make(map[string]int)
 	rows, err := s.db.Query("SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type ORDER BY COUNT(*) DESC")
@@ -388,7 +388,7 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 		}
 	}
 	analysis["entity_types"] = entityTypes
-	
+
 	// Relation type distribution
 	relationTypes := make(map[string]int)
 	rows, err = s.db.Query("SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC")
@@ -403,7 +403,7 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 		}
 	}
 	analysis["relation_types"] = relationTypes
-	
+
 	// Most connected entities
 	connectedEntities := []map[string]interface{}{}
 	rows, err = s.db.Query(`
@@ -432,6 +432,6 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 		}
 	}
 	analysis["most_connected"] = connectedEntities
-	
+
 	return analysis, nil
 }

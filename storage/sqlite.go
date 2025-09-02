@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	
+
 	_ "modernc.org/sqlite"
 )
 
@@ -27,7 +27,7 @@ func (s *SQLiteStorage) Initialize() error {
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
-	
+
 	// Configure SQLite for better performance
 	if s.config.WALMode {
 		_, err = s.db.Exec("PRAGMA journal_mode=WAL")
@@ -35,33 +35,33 @@ func (s *SQLiteStorage) Initialize() error {
 			return fmt.Errorf("failed to enable WAL mode: %w", err)
 		}
 	}
-	
+
 	if s.config.CacheSize > 0 {
 		_, err = s.db.Exec(fmt.Sprintf("PRAGMA cache_size=%d", s.config.CacheSize))
 		if err != nil {
 			return fmt.Errorf("failed to set cache size: %w", err)
 		}
 	}
-	
+
 	if s.config.BusyTimeout > 0 {
 		_, err = s.db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", s.config.BusyTimeout.Milliseconds()))
 		if err != nil {
 			return fmt.Errorf("failed to set busy timeout: %w", err)
 		}
 	}
-	
+
 	// Create schema
 	if err = s.createSchema(); err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
-	
+
 	// Try to create FTS schema (optional, will fallback to regular search if it fails)
 	if err = s.createFTSSchema(); err != nil {
 		// Log warning but don't fail initialization
 		// Silently fallback - don't print to stdout in MCP mode
 		// FTS5 is optional, basic search will work fine
 	}
-	
+
 	return nil
 }
 
@@ -113,7 +113,7 @@ func (s *SQLiteStorage) createSchema() error {
 	-- Insert schema version
 	INSERT OR IGNORE INTO metadata (key, value) VALUES ('schema_version', '1.0');
 	`
-	
+
 	_, err := s.db.Exec(schema)
 	return err
 }
@@ -131,13 +131,13 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	if len(entities) == 0 {
 		return []Entity{}, nil
 	}
-	
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	// Prepare statements
 	entityStmt, err := tx.Prepare(`
 		INSERT INTO entities (name, entity_type) 
@@ -151,7 +151,7 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 		return nil, fmt.Errorf("failed to prepare entity statement: %w", err)
 	}
 	defer entityStmt.Close()
-	
+
 	obsStmt, err := tx.Prepare(`
 		INSERT INTO observations (entity_id, content) 
 		VALUES (?, ?) 
@@ -161,16 +161,16 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 		return nil, fmt.Errorf("failed to prepare observation statement: %w", err)
 	}
 	defer obsStmt.Close()
-	
+
 	created := make([]Entity, 0, len(entities))
-	
+
 	for _, entity := range entities {
 		var entityID int64
 		err = entityStmt.QueryRow(entity.Name, entity.EntityType).Scan(&entityID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert entity %s: %w", entity.Name, err)
 		}
-		
+
 		// Insert observations
 		for _, obs := range entity.Observations {
 			_, err = obsStmt.Exec(entityID, obs)
@@ -178,14 +178,14 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 				return nil, fmt.Errorf("failed to insert observation for %s: %w", entity.Name, err)
 			}
 		}
-		
+
 		created = append(created, entity)
 	}
-	
+
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
-	
+
 	return created, nil
 }
 
@@ -194,20 +194,20 @@ func (s *SQLiteStorage) DeleteEntities(names []string) error {
 	if len(names) == 0 {
 		return nil
 	}
-	
+
 	placeholders := make([]string, len(names))
 	args := make([]interface{}, len(names))
 	for i, name := range names {
 		placeholders[i] = "?"
 		args[i] = name
 	}
-	
+
 	query := fmt.Sprintf("DELETE FROM entities WHERE name IN (%s)", strings.Join(placeholders, ","))
 	_, err := s.db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to delete entities: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -216,13 +216,13 @@ func (s *SQLiteStorage) CreateRelations(relations []Relation) ([]Relation, error
 	if len(relations) == 0 {
 		return []Relation{}, nil
 	}
-	
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	stmt, err := tx.Prepare(`
 		INSERT INTO relations (from_entity_id, to_entity_id, relation_type)
 		SELECT 
@@ -237,24 +237,24 @@ func (s *SQLiteStorage) CreateRelations(relations []Relation) ([]Relation, error
 		return nil, fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
-	
+
 	created := make([]Relation, 0, len(relations))
-	
+
 	for _, rel := range relations {
 		result, err := stmt.Exec(rel.From, rel.To, rel.RelationType, rel.From, rel.To)
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert relation: %w", err)
 		}
-		
+
 		if rows, _ := result.RowsAffected(); rows > 0 {
 			created = append(created, rel)
 		}
 	}
-	
+
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
-	
+
 	return created, nil
 }
 
@@ -263,13 +263,13 @@ func (s *SQLiteStorage) DeleteRelations(relations []Relation) error {
 	if len(relations) == 0 {
 		return nil
 	}
-	
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	stmt, err := tx.Prepare(`
 		DELETE FROM relations 
 		WHERE from_entity_id = (SELECT id FROM entities WHERE name = ?)
@@ -280,18 +280,18 @@ func (s *SQLiteStorage) DeleteRelations(relations []Relation) error {
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
-	
+
 	for _, rel := range relations {
 		_, err = stmt.Exec(rel.From, rel.To, rel.RelationType)
 		if err != nil {
 			return fmt.Errorf("failed to delete relation: %w", err)
 		}
 	}
-	
+
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -300,13 +300,13 @@ func (s *SQLiteStorage) AddObservations(observations map[string][]string) (map[s
 	if len(observations) == 0 {
 		return map[string][]string{}, nil
 	}
-	
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	stmt, err := tx.Prepare(`
 		INSERT INTO observations (entity_id, content)
 		SELECT id, ? FROM entities WHERE name = ?
@@ -316,9 +316,9 @@ func (s *SQLiteStorage) AddObservations(observations map[string][]string) (map[s
 		return nil, fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
-	
+
 	added := make(map[string][]string)
-	
+
 	for entityName, obsList := range observations {
 		added[entityName] = []string{}
 		for _, obs := range obsList {
@@ -326,17 +326,17 @@ func (s *SQLiteStorage) AddObservations(observations map[string][]string) (map[s
 			if err != nil {
 				return nil, fmt.Errorf("failed to add observation: %w", err)
 			}
-			
+
 			if rows, _ := result.RowsAffected(); rows > 0 {
 				added[entityName] = append(added[entityName], obs)
 			}
 		}
 	}
-	
+
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
-	
+
 	return added, nil
 }
 
@@ -345,13 +345,13 @@ func (s *SQLiteStorage) DeleteObservations(deletions []ObservationDeletion) erro
 	if len(deletions) == 0 {
 		return nil
 	}
-	
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	stmt, err := tx.Prepare(`
 		DELETE FROM observations 
 		WHERE entity_id = (SELECT id FROM entities WHERE name = ?)
@@ -361,7 +361,7 @@ func (s *SQLiteStorage) DeleteObservations(deletions []ObservationDeletion) erro
 		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
-	
+
 	for _, del := range deletions {
 		for _, obs := range del.Observations {
 			_, err = stmt.Exec(del.EntityName, obs)
@@ -370,11 +370,11 @@ func (s *SQLiteStorage) DeleteObservations(deletions []ObservationDeletion) erro
 			}
 		}
 	}
-	
+
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -384,7 +384,7 @@ func (s *SQLiteStorage) ReadGraph() (*KnowledgeGraph, error) {
 		Entities:  []Entity{},
 		Relations: []Relation{},
 	}
-	
+
 	// Load entities with observations
 	rows, err := s.db.Query(`
 		SELECT e.name, e.entity_type, 
@@ -398,32 +398,32 @@ func (s *SQLiteStorage) ReadGraph() (*KnowledgeGraph, error) {
 		return nil, fmt.Errorf("failed to query entities: %w", err)
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var name, entityType string
 		var obsStr sql.NullString
-		
+
 		if err := rows.Scan(&name, &entityType, &obsStr); err != nil {
 			return nil, fmt.Errorf("failed to scan entity: %w", err)
 		}
-		
+
 		entity := Entity{
 			Name:         name,
 			EntityType:   entityType,
 			Observations: []string{},
 		}
-		
+
 		if obsStr.Valid && obsStr.String != "" {
 			entity.Observations = strings.Split(obsStr.String, "|||")
 		}
-		
+
 		graph.Entities = append(graph.Entities, entity)
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating entities: %w", err)
 	}
-	
+
 	// Load relations
 	rows, err = s.db.Query(`
 		SELECT f.name, t.name, r.relation_type
@@ -436,24 +436,24 @@ func (s *SQLiteStorage) ReadGraph() (*KnowledgeGraph, error) {
 		return nil, fmt.Errorf("failed to query relations: %w", err)
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var from, to, relType string
 		if err := rows.Scan(&from, &to, &relType); err != nil {
 			return nil, fmt.Errorf("failed to scan relation: %w", err)
 		}
-		
+
 		graph.Relations = append(graph.Relations, Relation{
 			From:         from,
 			To:           to,
 			RelationType: relType,
 		})
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating relations: %w", err)
 	}
-	
+
 	return graph, nil
 }
 
@@ -468,7 +468,7 @@ func (s *SQLiteStorage) SearchNodes(query string) (*KnowledgeGraph, error) {
 		// Log FTS error but continue with basic search
 		// Silently fallback - don't print to stdout in MCP mode
 	}
-	
+
 	// Always use basic search as fallback
 	return s.searchNodesBasic(query)
 }
@@ -486,11 +486,11 @@ func (s *SQLiteStorage) searchNodesBasic(query string) (*KnowledgeGraph, error) 
 		Entities:  []Entity{},
 		Relations: []Relation{},
 	}
-	
+
 	if query == "" {
 		return graph, nil
 	}
-	
+
 	// Search in entity names, types, and observations
 	searchQuery := `
 		SELECT DISTINCT e.id, e.name, e.entity_type
@@ -501,25 +501,25 @@ func (s *SQLiteStorage) searchNodesBasic(query string) (*KnowledgeGraph, error) 
 		   OR o.content LIKE ?
 		ORDER BY e.created_at
 	`
-	
+
 	searchPattern := "%" + query + "%"
 	rows, err := s.db.Query(searchQuery, searchPattern, searchPattern, searchPattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search entities: %w", err)
 	}
 	defer rows.Close()
-	
+
 	entityIDs := []int64{}
 	entityMap := make(map[int64]Entity)
-	
+
 	for rows.Next() {
 		var id int64
 		var name, entityType string
-		
+
 		if err := rows.Scan(&id, &name, &entityType); err != nil {
 			return nil, fmt.Errorf("failed to scan search result: %w", err)
 		}
-		
+
 		entityIDs = append(entityIDs, id)
 		entityMap[id] = Entity{
 			Name:         name,
@@ -527,11 +527,11 @@ func (s *SQLiteStorage) searchNodesBasic(query string) (*KnowledgeGraph, error) 
 			Observations: []string{},
 		}
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating search results: %w", err)
 	}
-	
+
 	// Load observations for found entities
 	if len(entityIDs) > 0 {
 		placeholders := make([]string, len(entityIDs))
@@ -540,43 +540,43 @@ func (s *SQLiteStorage) searchNodesBasic(query string) (*KnowledgeGraph, error) 
 			placeholders[i] = "?"
 			args[i] = id
 		}
-		
+
 		obsQuery := fmt.Sprintf(`
 			SELECT entity_id, content 
 			FROM observations 
 			WHERE entity_id IN (%s)
 			ORDER BY id
 		`, strings.Join(placeholders, ","))
-		
+
 		rows, err := s.db.Query(obsQuery, args...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query observations: %w", err)
 		}
 		defer rows.Close()
-		
+
 		for rows.Next() {
 			var entityID int64
 			var content string
-			
+
 			if err := rows.Scan(&entityID, &content); err != nil {
 				return nil, fmt.Errorf("failed to scan observation: %w", err)
 			}
-			
+
 			if entity, ok := entityMap[entityID]; ok {
 				entity.Observations = append(entity.Observations, content)
 				entityMap[entityID] = entity
 			}
 		}
-		
+
 		if err = rows.Err(); err != nil {
 			return nil, fmt.Errorf("error iterating observations: %w", err)
 		}
-		
+
 		// Convert map to slice
 		for _, entity := range entityMap {
 			graph.Entities = append(graph.Entities, entity)
 		}
-		
+
 		// Load relations for found entities
 		relQuery := fmt.Sprintf(`
 			SELECT f.name, t.name, r.relation_type
@@ -586,34 +586,34 @@ func (s *SQLiteStorage) searchNodesBasic(query string) (*KnowledgeGraph, error) 
 			WHERE r.from_entity_id IN (%s) OR r.to_entity_id IN (%s)
 			ORDER BY r.created_at
 		`, strings.Join(placeholders, ","), strings.Join(placeholders, ","))
-		
+
 		// Duplicate args for both IN clauses
 		relArgs := append(args, args...)
-		
+
 		rows, err = s.db.Query(relQuery, relArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query relations: %w", err)
 		}
 		defer rows.Close()
-		
+
 		for rows.Next() {
 			var from, to, relType string
 			if err := rows.Scan(&from, &to, &relType); err != nil {
 				return nil, fmt.Errorf("failed to scan relation: %w", err)
 			}
-			
+
 			graph.Relations = append(graph.Relations, Relation{
 				From:         from,
 				To:           to,
 				RelationType: relType,
 			})
 		}
-		
+
 		if err = rows.Err(); err != nil {
 			return nil, fmt.Errorf("error iterating relations: %w", err)
 		}
 	}
-	
+
 	return graph, nil
 }
 
@@ -623,18 +623,18 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 		Entities:  []Entity{},
 		Relations: []Relation{},
 	}
-	
+
 	if len(names) == 0 {
 		return graph, nil
 	}
-	
+
 	placeholders := make([]string, len(names))
 	args := make([]interface{}, len(names))
 	for i, name := range names {
 		placeholders[i] = "?"
 		args[i] = name
 	}
-	
+
 	// Load entities with observations
 	query := fmt.Sprintf(`
 		SELECT e.id, e.name, e.entity_type, 
@@ -645,43 +645,43 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 		GROUP BY e.id, e.name, e.entity_type
 		ORDER BY e.created_at
 	`, strings.Join(placeholders, ","))
-	
+
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query entities: %w", err)
 	}
 	defer rows.Close()
-	
+
 	entityIDs := []int64{}
-	
+
 	for rows.Next() {
 		var id int64
 		var name, entityType string
 		var obsStr sql.NullString
-		
+
 		if err := rows.Scan(&id, &name, &entityType, &obsStr); err != nil {
 			return nil, fmt.Errorf("failed to scan entity: %w", err)
 		}
-		
+
 		entityIDs = append(entityIDs, id)
-		
+
 		entity := Entity{
 			Name:         name,
 			EntityType:   entityType,
 			Observations: []string{},
 		}
-		
+
 		if obsStr.Valid && obsStr.String != "" {
 			entity.Observations = strings.Split(obsStr.String, "|||")
 		}
-		
+
 		graph.Entities = append(graph.Entities, entity)
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating entities: %w", err)
 	}
-	
+
 	// Load relations for found entities
 	if len(entityIDs) > 0 {
 		placeholders := make([]string, len(entityIDs))
@@ -690,7 +690,7 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 			placeholders[i] = "?"
 			args[i] = id
 		}
-		
+
 		relQuery := fmt.Sprintf(`
 			SELECT f.name, t.name, r.relation_type
 			FROM relations r
@@ -699,34 +699,34 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 			WHERE r.from_entity_id IN (%s) OR r.to_entity_id IN (%s)
 			ORDER BY r.created_at
 		`, strings.Join(placeholders, ","), strings.Join(placeholders, ","))
-		
+
 		// Duplicate args for both IN clauses
 		relArgs := append(args, args...)
-		
+
 		rows, err := s.db.Query(relQuery, relArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query relations: %w", err)
 		}
 		defer rows.Close()
-		
+
 		for rows.Next() {
 			var from, to, relType string
 			if err := rows.Scan(&from, &to, &relType); err != nil {
 				return nil, fmt.Errorf("failed to scan relation: %w", err)
 			}
-			
+
 			graph.Relations = append(graph.Relations, Relation{
 				From:         from,
 				To:           to,
 				RelationType: relType,
 			})
 		}
-		
+
 		if err = rows.Err(); err != nil {
 			return nil, fmt.Errorf("error iterating relations: %w", err)
 		}
 	}
-	
+
 	return graph, nil
 }
 
@@ -740,13 +740,13 @@ func (s *SQLiteStorage) ImportData(graph *KnowledgeGraph) error {
 	if graph == nil {
 		return nil
 	}
-	
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	
+
 	// Import entities
 	if len(graph.Entities) > 0 {
 		entityStmt, err := tx.Prepare(`
@@ -761,7 +761,7 @@ func (s *SQLiteStorage) ImportData(graph *KnowledgeGraph) error {
 			return fmt.Errorf("failed to prepare entity statement: %w", err)
 		}
 		defer entityStmt.Close()
-		
+
 		obsStmt, err := tx.Prepare(`
 			INSERT INTO observations (entity_id, content) 
 			VALUES (?, ?) 
@@ -771,14 +771,14 @@ func (s *SQLiteStorage) ImportData(graph *KnowledgeGraph) error {
 			return fmt.Errorf("failed to prepare observation statement: %w", err)
 		}
 		defer obsStmt.Close()
-		
+
 		for _, entity := range graph.Entities {
 			var entityID int64
 			err = entityStmt.QueryRow(entity.Name, entity.EntityType).Scan(&entityID)
 			if err != nil {
 				return fmt.Errorf("failed to import entity %s: %w", entity.Name, err)
 			}
-			
+
 			for _, obs := range entity.Observations {
 				_, err = obsStmt.Exec(entityID, obs)
 				if err != nil {
@@ -787,7 +787,7 @@ func (s *SQLiteStorage) ImportData(graph *KnowledgeGraph) error {
 			}
 		}
 	}
-	
+
 	// Import relations
 	if len(graph.Relations) > 0 {
 		relStmt, err := tx.Prepare(`
@@ -804,7 +804,7 @@ func (s *SQLiteStorage) ImportData(graph *KnowledgeGraph) error {
 			return fmt.Errorf("failed to prepare relation statement: %w", err)
 		}
 		defer relStmt.Close()
-		
+
 		for _, rel := range graph.Relations {
 			_, err = relStmt.Exec(rel.From, rel.To, rel.RelationType, rel.From, rel.To)
 			if err != nil {
@@ -812,10 +812,10 @@ func (s *SQLiteStorage) ImportData(graph *KnowledgeGraph) error {
 			}
 		}
 	}
-	
+
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit import transaction: %w", err)
 	}
-	
+
 	return nil
 }

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -273,8 +275,9 @@ func (m *KnowledgeGraphManager) OpenNodes(names []string) (storage.KnowledgeGrap
 }
 
 // Version information
-const (
-	version = "0.2.2"
+var (
+	// version can be overridden by -ldflags "-X main.version=..."
+	version = "dev"
 	appName = "Memory MCP Server"
 )
 
@@ -303,13 +306,17 @@ func main() {
 	var migrateTo string
 	var dryRun bool
 	var force bool
+	// HTTP transport options
+	var httpEndpoint string
+	var httpHeartbeat string
+	var httpStateless bool
 
 	// Override the default usage message
 	flag.Usage = printUsage
 
 	// Define command-line flags
-	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio or sse)")
-	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio or sse)")
+	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio, sse, or http)")
+	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio, sse, or http)")
 	flag.StringVar(&memory, "memory", "", "Path to memory file")
 	flag.StringVar(&memory, "m", "", "Path to memory file")
 	flag.IntVar(&port, "port", 8080, "Port for SSE transport")
@@ -326,6 +333,12 @@ func main() {
 	flag.StringVar(&migrateTo, "migrate-to", "", "Destination SQLite file for migration")
 	flag.BoolVar(&dryRun, "dry-run", false, "Perform a dry run of migration")
 	flag.BoolVar(&force, "force", false, "Force overwrite destination file during migration")
+
+	// HTTP transport flags
+	flag.StringVar(&httpEndpoint, "http-endpoint", "/mcp", "Streamable HTTP endpoint path (e.g. /mcp)")
+	flag.StringVar(&httpEndpoint, "http_ep", "/mcp", "Streamable HTTP endpoint path (alias)")
+	flag.StringVar(&httpHeartbeat, "http-heartbeat", "30s", "Streamable HTTP heartbeat interval, e.g. 30s, 1m")
+	flag.BoolVar(&httpStateless, "http-stateless", false, "Run Streamable HTTP in stateless mode (no session tracking)")
 
 	flag.Parse()
 
@@ -384,7 +397,11 @@ func main() {
 		version,
 		server.WithResourceCapabilities(true, true),
 		server.WithLogging(),
+		server.WithRecovery(),
 	)
+
+	// Declare sampling capability (optional, harmless if unused)
+	s.EnableSampling()
 
 	// Add create_entities tool
 	createEntitiesTool := mcp.NewTool("create_entities",
@@ -562,23 +579,19 @@ func main() {
 
 	// Add handlers
 	s.AddTool(createEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := request.Params.Arguments["entities"]
-		if args == nil {
+		// Bind arguments using new mcp-go helpers
+		var arg struct {
+			Entities []storage.Entity `json:"entities"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if len(arg.Entities) == 0 {
 			return nil, errors.New("missing required parameter: entities")
 		}
 
-		// Convert parameters to entity list
-		var entities []storage.Entity
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &entities); err != nil {
-			return nil, err
-		}
-
 		// Create entities
-		newEntities, err := manager.CreateEntities(entities)
+		newEntities, err := manager.CreateEntities(arg.Entities)
 		if err != nil {
 			return nil, err
 		}
@@ -593,23 +606,18 @@ func main() {
 	})
 
 	s.AddTool(createRelationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := request.Params.Arguments["relations"]
-		if args == nil {
+		var arg struct {
+			Relations []storage.Relation `json:"relations"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if len(arg.Relations) == 0 {
 			return nil, errors.New("missing required parameter: relations")
 		}
 
-		// Convert parameters to relation list
-		var relations []storage.Relation
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &relations); err != nil {
-			return nil, err
-		}
-
 		// Create relations
-		newRelations, err := manager.CreateRelations(relations)
+		newRelations, err := manager.CreateRelations(arg.Relations)
 		if err != nil {
 			return nil, err
 		}
@@ -624,23 +632,18 @@ func main() {
 	})
 
 	s.AddTool(addObservationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := request.Params.Arguments["observations"]
-		if args == nil {
+		var arg struct {
+			Observations []ObservationAddition `json:"observations"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if len(arg.Observations) == 0 {
 			return nil, errors.New("missing required parameter: observations")
 		}
 
-		// Convert parameters to observation addition list
-		var observations []ObservationAddition
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &observations); err != nil {
-			return nil, err
-		}
-
 		// Add observations
-		results, err := manager.AddObservations(observations)
+		results, err := manager.AddObservations(arg.Observations)
 		if err != nil {
 			return nil, err
 		}
@@ -655,23 +658,18 @@ func main() {
 	})
 
 	s.AddTool(deleteEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := request.Params.Arguments["entityNames"]
-		if args == nil {
+		var arg struct {
+			EntityNames []string `json:"entityNames"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if len(arg.EntityNames) == 0 {
 			return nil, errors.New("missing required parameter: entityNames")
 		}
 
-		// Convert parameters to entity name list
-		var entityNames []string
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &entityNames); err != nil {
-			return nil, err
-		}
-
 		// Delete entities
-		if err := manager.DeleteEntities(entityNames); err != nil {
+		if err := manager.DeleteEntities(arg.EntityNames); err != nil {
 			return nil, err
 		}
 
@@ -679,23 +677,18 @@ func main() {
 	})
 
 	s.AddTool(deleteObservationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := request.Params.Arguments["deletions"]
-		if args == nil {
+		var arg struct {
+			Deletions []storage.ObservationDeletion `json:"deletions"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if len(arg.Deletions) == 0 {
 			return nil, errors.New("missing required parameter: deletions")
 		}
 
-		// Convert parameters to observation deletion list
-		var deletions []storage.ObservationDeletion
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &deletions); err != nil {
-			return nil, err
-		}
-
 		// Delete observations
-		if err := manager.DeleteObservations(deletions); err != nil {
+		if err := manager.DeleteObservations(arg.Deletions); err != nil {
 			return nil, err
 		}
 
@@ -703,23 +696,18 @@ func main() {
 	})
 
 	s.AddTool(deleteRelationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := request.Params.Arguments["relations"]
-		if args == nil {
+		var arg struct {
+			Relations []storage.Relation `json:"relations"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if len(arg.Relations) == 0 {
 			return nil, errors.New("missing required parameter: relations")
 		}
 
-		// Convert parameters to relation list
-		var relations []storage.Relation
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &relations); err != nil {
-			return nil, err
-		}
-
 		// Delete relations
-		if err := manager.DeleteRelations(relations); err != nil {
+		if err := manager.DeleteRelations(arg.Relations); err != nil {
 			return nil, err
 		}
 
@@ -743,8 +731,8 @@ func main() {
 	})
 
 	s.AddTool(searchNodesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query, ok := request.Params.Arguments["query"].(string)
-		if !ok {
+		query, err := request.RequireString("query")
+		if err != nil {
 			return nil, errors.New("missing required parameter: query")
 		}
 
@@ -764,23 +752,18 @@ func main() {
 	})
 
 	s.AddTool(openNodesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := request.Params.Arguments["names"]
-		if args == nil {
+		var arg struct {
+			Names []string `json:"names"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if len(arg.Names) == 0 {
 			return nil, errors.New("missing required parameter: names")
 		}
 
-		// Convert parameters to name list
-		var names []string
-		data, err := json.Marshal(args)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &names); err != nil {
-			return nil, err
-		}
-
 		// Open nodes
-		results, err := manager.OpenNodes(names)
+		results, err := manager.OpenNodes(arg.Names)
 		if err != nil {
 			return nil, err
 		}
@@ -802,10 +785,66 @@ func main() {
 		}
 	case "sse":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on SSE")
-		sseServer := server.NewSSEServer(s, server.WithBaseURL(fmt.Sprintf("http://localhost:%d", port)))
-		log.Printf("Server started listening on :%d\n", port)
-		if err := sseServer.Start(fmt.Sprintf(":%d", port)); err != nil {
-			log.Fatalf("Failed to start server: %v", err)
+		sseServer := server.NewSSEServer(
+			s,
+			server.WithBaseURL(fmt.Sprintf("http://localhost:%d", port)),
+			server.WithKeepAliveInterval(30*time.Second),
+		)
+		log.Printf("SSE listening on :%d\n", port)
+		// Start in background and handle graceful shutdown
+		errCh := make(chan error, 1)
+		go func() { errCh <- sseServer.Start(fmt.Sprintf(":%d", port)) }()
+		// Wait for signal or server error
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		select {
+		case sig := <-sigCh:
+			log.Printf("Received %s, shutting down SSE...", sig)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := sseServer.Shutdown(ctx); err != nil {
+				log.Printf("SSE shutdown error: %v", err)
+			}
+		case err := <-errCh:
+			if err != nil {
+				log.Fatalf("SSE server error: %v", err)
+			}
+		}
+	case "http", "streamable-http":
+		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on Streamable HTTP")
+		// Parse heartbeat duration
+		hb := 30 * time.Second
+		if d, err := time.ParseDuration(httpHeartbeat); err == nil {
+			hb = d
+		}
+		// Build options
+		httpOpts := []server.StreamableHTTPOption{
+			server.WithEndpointPath(httpEndpoint),
+			server.WithHeartbeatInterval(hb),
+		}
+		if httpStateless {
+			httpOpts = append(httpOpts, server.WithStateLess(true))
+		}
+		httpServer := server.NewStreamableHTTPServer(s, httpOpts...)
+		log.Printf("Streamable HTTP listening on http://localhost:%d%s\n", port, httpEndpoint)
+
+		// Start in background and handle graceful shutdown
+		errCh := make(chan error, 1)
+		go func() { errCh <- httpServer.Start(fmt.Sprintf(":%d", port)) }()
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		select {
+		case sig := <-sigCh:
+			log.Printf("Received %s, shutting down HTTP...", sig)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := httpServer.Shutdown(ctx); err != nil {
+				log.Printf("HTTP shutdown error: %v", err)
+			}
+		case err := <-errCh:
+			if err != nil {
+				log.Fatalf("HTTP server error: %v", err)
+			}
 		}
 	default:
 		log.Fatalf("Invalid transport: %s", transport)

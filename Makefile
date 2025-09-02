@@ -1,98 +1,124 @@
-# Memory MCP Server Go Makefile
-# Targets all major desktop platforms with pure Go SQLite
+## Go build Makefile (standardized)
 
-APP_NAME=memory-mcp-server-go
-BUILD_DIR=.build
-VERSION=0.2.0
-LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
+APP_NAME ?= memory-mcp-server-go
+BUILD_DIR ?= .build
+# Single source of truth for version (no git required)
+VERSION_FILE ?= VERSION
+VERSION ?= $(shell cat $(VERSION_FILE) 2>/dev/null || echo 0.0.0)
+GO ?= go
+CGO_ENABLED ?= 0
 
-.PHONY: all clean build-all dev help
+# ldflags: strip symbols and inject version
+LD_FLAGS := -s -w -X main.version=$(VERSION)
+GO_BUILD_FLAGS ?= -trimpath -ldflags '$(LD_FLAGS)'
 
-all: build-all
+# Target matrix
+GOOSARCHES ?= \
+	darwin/amd64 \
+	darwin/arm64 \
+	linux/amd64 \
+	linux/arm64 \
+	windows/amd64 \
+	windows/arm64
 
-# Local development build (current platform)
-dev: $(BUILD_DIR)
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(APP_NAME)
+# Formatting exclusions and file list
+EXCLUDE_DIRS ?= .cache .build vendor
+FIND_EXCLUDES := $(foreach d,$(EXCLUDE_DIRS),-not -path './$(d)/*')
+GO_SOURCES := $(shell find . -type f -name '*.go' $(FIND_EXCLUDES))
 
+.PHONY: all build build-all clean dist help fmt vet tidy deps verify check
+
+all: build
+
+# Local build for current platform
+build: $(BUILD_DIR)
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(APP_NAME) .
 
 # Ensure build directory exists
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
+	@mkdir -p $(BUILD_DIR)
 
 # Clean build artifacts
 clean:
 	rm -rf $(BUILD_DIR)
 
-# Build for all platforms with pure Go SQLite
-build-all: $(BUILD_DIR)
-	@echo "Building all platforms with pure Go SQLite support..."
-	@echo "Temporarily switching to pure Go SQLite driver..."
-	@if ! grep -q "modernc.org/sqlite" go.mod; then \
-		go get modernc.org/sqlite@latest; \
+# Format source code (in-place)
+fmt:
+	@echo "Formatting Go sources..."
+	@if [ -n "$(GO_SOURCES)" ]; then \
+		gofmt -s -w $(GO_SOURCES); \
 	fi
-	@# Create temporary main file with pure Go SQLite
-	@sed 's|_ "github.com/mattn/go-sqlite3"|_ "modernc.org/sqlite"|' main.go > main_purego.go
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-darwin-amd64 ./main_purego.go
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-darwin-arm64 ./main_purego.go
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-linux-amd64 ./main_purego.go
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-linux-arm64 ./main_purego.go
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-windows-amd64.exe ./main_purego.go
-	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(APP_NAME)-windows-arm64.exe ./main_purego.go
-	@# Create macOS universal binary
-	lipo -create -output $(BUILD_DIR)/$(APP_NAME)-darwin-universal \
-		$(BUILD_DIR)/$(APP_NAME)-darwin-amd64 \
-		$(BUILD_DIR)/$(APP_NAME)-darwin-arm64
-	@rm -f main_purego.go
-	@echo "All platform binaries with SQLite support created in $(BUILD_DIR)/"
+	$(GO) fmt ./...
 
-# Create distribution archives
-.PHONY: dist
+# Static analysis
+vet:
+	$(GO) vet ./...
+
+# Sync go.mod/go.sum
+tidy:
+	$(GO) mod tidy
+
+# Pre-fetch modules
+deps:
+	$(GO) mod download
+
+# Verify dependencies against go.sum
+verify:
+	$(GO) mod verify
+
+# Quick sanity checks (format + vet without modifying files)
+check:
+	@echo "Checking formatting..."; \
+	CHANGED=$$(gofmt -s -l $(GO_SOURCES) || true); \
+	if [ -n "$$CHANGED" ]; then \
+		echo "The following files need formatting:"; \
+		echo "$$CHANGED"; \
+		exit 1; \
+	fi; \
+	$(GO) vet ./...
+
+# Cross-compile for common OS/ARCH targets
+build-all: $(BUILD_DIR)
+	@set -euo pipefail; \
+	CACHE_ROOT=$$(pwd)/.cache; \
+	GOCACHE=$${GOCACHE:-$$CACHE_ROOT/gobuild}; \
+	GOMODCACHE=$${GOMODCACHE:-$$CACHE_ROOT/gomod}; \
+	mkdir -p $$GOCACHE $$GOMODCACHE; \
+	for target in $(GOOSARCHES); do \
+		os=$${target%/*}; arch=$${target#*/}; \
+		case $$os in windows) ext=.exe;; *) ext=;; esac; \
+		out="$(BUILD_DIR)/$(APP_NAME)-$$os-$$arch$$ext"; \
+		echo "Building $$os/$$arch -> $$out"; \
+		GOCACHE=$$GOCACHE GOMODCACHE=$$GOMODCACHE \
+		CGO_ENABLED=$(CGO_ENABLED) GOOS=$$os GOARCH=$$arch \
+		$(GO) build $(GO_BUILD_FLAGS) -o "$$out" .; \
+	done; \
+	echo "Binaries created in $(BUILD_DIR)/"
+
+# Create compressed artifacts from build-all outputs
 dist: build-all
-	mkdir -p $(BUILD_DIR)/dist
-	# macOS Intel (x86_64)
-	cp $(BUILD_DIR)/$(APP_NAME)-darwin-amd64 $(BUILD_DIR)/dist/$(APP_NAME)
-	cd $(BUILD_DIR)/dist && zip -r ../$(APP_NAME)-macos-x86_64.zip $(APP_NAME) && rm $(APP_NAME)
-	
-	# macOS Apple Silicon (arm64)
-	cp $(BUILD_DIR)/$(APP_NAME)-darwin-arm64 $(BUILD_DIR)/dist/$(APP_NAME)
-	cd $(BUILD_DIR)/dist && zip -r ../$(APP_NAME)-macos-arm64.zip $(APP_NAME) && rm $(APP_NAME)
-	
-	# macOS Universal
-	cp $(BUILD_DIR)/$(APP_NAME)-darwin-universal $(BUILD_DIR)/dist/$(APP_NAME)
-	cd $(BUILD_DIR)/dist && zip -r ../$(APP_NAME)-macos-universal.zip $(APP_NAME) && rm $(APP_NAME)
-	
-	# Linux AMD64
-	cp $(BUILD_DIR)/$(APP_NAME)-linux-amd64 $(BUILD_DIR)/dist/$(APP_NAME)
-	cd $(BUILD_DIR)/dist && tar -czf ../$(APP_NAME)-linux-amd64.tar.gz $(APP_NAME) && rm $(APP_NAME)
-	
-	# Linux ARM64
-	cp $(BUILD_DIR)/$(APP_NAME)-linux-arm64 $(BUILD_DIR)/dist/$(APP_NAME)
-	cd $(BUILD_DIR)/dist && tar -czf ../$(APP_NAME)-linux-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
-	
-	# Windows AMD64
-	cp $(BUILD_DIR)/$(APP_NAME)-windows-amd64.exe $(BUILD_DIR)/dist/$(APP_NAME).exe
-	cd $(BUILD_DIR)/dist && zip -r ../$(APP_NAME)-windows-amd64.zip $(APP_NAME).exe && rm $(APP_NAME).exe
-	
-	# Windows ARM64
-	cp $(BUILD_DIR)/$(APP_NAME)-windows-arm64.exe $(BUILD_DIR)/dist/$(APP_NAME).exe
-	cd $(BUILD_DIR)/dist && zip -r ../$(APP_NAME)-windows-arm64.zip $(APP_NAME).exe && rm $(APP_NAME).exe
-	
-	rmdir $(BUILD_DIR)/dist
-	@echo "Distribution archives created in $(BUILD_DIR)/"
+	@set -e; mkdir -p $(BUILD_DIR)/dist; \
+	for f in $(BUILD_DIR)/$(APP_NAME)-*; do \
+		base=$${f##*/}; \
+		case $$base in \
+			*.exe) (cd $(BUILD_DIR) && zip -9 -q "dist/$${base%.*}.zip" "$$base") ;; \
+			*) (cd $(BUILD_DIR) && tar -czf "dist/$$base.tgz" "$$base") ;; \
+		esac; \
+	done; \
+	echo "Artifacts in $(BUILD_DIR)/dist"
 
 # Show help
 help:
-	@echo "Memory MCP Server Go - Build System"
+	@echo "$(APP_NAME) - Make targets"
 	@echo "Version: $(VERSION)"
-	@echo ""
-	@echo "Available targets:"
-	@echo "  all              Build for all platforms with pure Go SQLite"
-	@echo "  build-all        Build for all platforms with pure Go SQLite"
-	@echo "  dev              Build for current platform (development)"
-	@echo "  clean            Clean build artifacts"
-	@echo "  dist             Create distribution archives"
-	@echo ""
-	@echo "Notes:"
-	@echo "  - All builds use pure Go SQLite (modernc.org/sqlite) for simplicity"
-	@echo "  - Supports automatic JSONL->SQLite migration when needed"
-	@echo "  - Cross-platform builds work without CGO dependencies"
+	@echo
+	@echo "Targets:"
+	@echo "  build        Build for current platform"
+	@echo "  build-all    Build for common OS/ARCH (cross-compile)"
+	@echo "  dist         Package binaries into zip/tgz"
+	@echo "  clean        Remove build artifacts"
+	@echo
+	@echo "Variables (override with make VAR=value):"
+	@echo "  VERSION      Version string for -ldflags (default: git describe or 0.2.2)"
+	@echo "  CGO_ENABLED  0 for pure Go builds (default: 0)"
+	@echo "  GO           Go command (default: go)"

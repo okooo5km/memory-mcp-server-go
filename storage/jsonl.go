@@ -28,7 +28,7 @@ func (j *JSONLStorage) Initialize() error {
 			return fmt.Errorf("failed to create directory: %w", err)
 		}
 	}
-	
+
 	// Create file if it doesn't exist
 	if _, err := os.Stat(j.config.FilePath); os.IsNotExist(err) {
 		file, err := os.Create(j.config.FilePath)
@@ -37,7 +37,7 @@ func (j *JSONLStorage) Initialize() error {
 		}
 		file.Close()
 	}
-	
+
 	return nil
 }
 
@@ -53,22 +53,22 @@ func (j *JSONLStorage) loadGraph() (*KnowledgeGraph, error) {
 		Entities:  []Entity{},
 		Relations: []Relation{},
 	}
-	
+
 	// Check if file exists
 	if _, err := os.Stat(j.config.FilePath); os.IsNotExist(err) {
 		return graph, nil
 	}
-	
+
 	// Read file content
 	data, err := os.ReadFile(j.config.FilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
-	
+
 	if len(data) == 0 {
 		return graph, nil
 	}
-	
+
 	// Parse line by line
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
@@ -76,18 +76,18 @@ func (j *JSONLStorage) loadGraph() (*KnowledgeGraph, error) {
 		if line == "" {
 			continue
 		}
-		
+
 		// First check the type field
 		var item map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &item); err != nil {
 			continue
 		}
-		
+
 		itemType, ok := item["type"].(string)
 		if !ok {
 			continue
 		}
-		
+
 		if itemType == "entity" {
 			var entity jsonlEntity
 			if err := json.Unmarshal([]byte(line), &entity); err == nil {
@@ -108,14 +108,14 @@ func (j *JSONLStorage) loadGraph() (*KnowledgeGraph, error) {
 			}
 		}
 	}
-	
+
 	return graph, nil
 }
 
 // saveGraph saves the knowledge graph to JSONL file
 func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 	var lines []string
-	
+
 	// Convert entities
 	for _, entity := range graph.Entities {
 		jsonEntity := jsonlEntity{
@@ -130,7 +130,7 @@ func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 		}
 		lines = append(lines, string(data))
 	}
-	
+
 	// Convert relations
 	for _, relation := range graph.Relations {
 		jsonRelation := jsonlRelation{
@@ -145,13 +145,13 @@ func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 		}
 		lines = append(lines, string(data))
 	}
-	
+
 	// Save to file
 	content := strings.Join(lines, "\n")
 	if len(lines) > 0 {
 		content += "\n"
 	}
-	
+
 	return os.WriteFile(j.config.FilePath, []byte(content), 0644)
 }
 
@@ -161,7 +161,7 @@ func (j *JSONLStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	created := []Entity{}
 	for _, entity := range entities {
 		// Check if entity already exists
@@ -181,17 +181,17 @@ func (j *JSONLStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 				break
 			}
 		}
-		
+
 		if !exists {
 			graph.Entities = append(graph.Entities, entity)
 			created = append(created, entity)
 		}
 	}
-	
+
 	if err := j.saveGraph(graph); err != nil {
 		return nil, err
 	}
-	
+
 	return created, nil
 }
 
@@ -201,13 +201,13 @@ func (j *JSONLStorage) DeleteEntities(names []string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Create a set for quick lookup
 	namesToDelete := make(map[string]bool)
 	for _, name := range names {
 		namesToDelete[name] = true
 	}
-	
+
 	// Filter entities
 	filteredEntities := []Entity{}
 	for _, entity := range graph.Entities {
@@ -216,7 +216,7 @@ func (j *JSONLStorage) DeleteEntities(names []string) error {
 		}
 	}
 	graph.Entities = filteredEntities
-	
+
 	// Filter relations (remove those involving deleted entities)
 	filteredRelations := []Relation{}
 	for _, relation := range graph.Relations {
@@ -225,7 +225,7 @@ func (j *JSONLStorage) DeleteEntities(names []string) error {
 		}
 	}
 	graph.Relations = filteredRelations
-	
+
 	return j.saveGraph(graph)
 }
 
@@ -235,7 +235,7 @@ func (j *JSONLStorage) CreateRelations(relations []Relation) ([]Relation, error)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	created := []Relation{}
 	for _, relation := range relations {
 		// Check if relation already exists
@@ -246,17 +246,17 @@ func (j *JSONLStorage) CreateRelations(relations []Relation) ([]Relation, error)
 				break
 			}
 		}
-		
+
 		if !exists {
 			graph.Relations = append(graph.Relations, relation)
 			created = append(created, relation)
 		}
 	}
-	
+
 	if err := j.saveGraph(graph); err != nil {
 		return nil, err
 	}
-	
+
 	return created, nil
 }
 
@@ -266,14 +266,14 @@ func (j *JSONLStorage) DeleteRelations(relations []Relation) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Create a set for relation lookup
 	relationsToDelete := make(map[string]bool)
 	for _, r := range relations {
 		key := fmt.Sprintf("%s|%s|%s", r.From, r.To, r.RelationType)
 		relationsToDelete[key] = true
 	}
-	
+
 	// Filter relations
 	filteredRelations := []Relation{}
 	for _, relation := range graph.Relations {
@@ -283,7 +283,7 @@ func (j *JSONLStorage) DeleteRelations(relations []Relation) error {
 		}
 	}
 	graph.Relations = filteredRelations
-	
+
 	return j.saveGraph(graph)
 }
 
@@ -293,18 +293,18 @@ func (j *JSONLStorage) AddObservations(observations map[string][]string) (map[st
 	if err != nil {
 		return nil, err
 	}
-	
+
 	added := make(map[string][]string)
-	
+
 	for entityName, obsList := range observations {
 		added[entityName] = []string{}
-		
+
 		// Find entity
 		found := false
 		for i, entity := range graph.Entities {
 			if entity.Name == entityName {
 				found = true
-				
+
 				// Add non-duplicate observations
 				for _, obs := range obsList {
 					if !slices.Contains(entity.Observations, obs) {
@@ -315,16 +315,16 @@ func (j *JSONLStorage) AddObservations(observations map[string][]string) (map[st
 				break
 			}
 		}
-		
+
 		if !found {
 			return nil, fmt.Errorf("entity %s not found", entityName)
 		}
 	}
-	
+
 	if err := j.saveGraph(graph); err != nil {
 		return nil, err
 	}
-	
+
 	return added, nil
 }
 
@@ -334,7 +334,7 @@ func (j *JSONLStorage) DeleteObservations(deletions []ObservationDeletion) error
 	if err != nil {
 		return err
 	}
-	
+
 	for _, deletion := range deletions {
 		// Find entity
 		for i, entity := range graph.Entities {
@@ -344,7 +344,7 @@ func (j *JSONLStorage) DeleteObservations(deletions []ObservationDeletion) error
 				for _, obs := range deletion.Observations {
 					toDelete[obs] = true
 				}
-				
+
 				// Filter observations
 				filteredObs := []string{}
 				for _, obs := range entity.Observations {
@@ -357,7 +357,7 @@ func (j *JSONLStorage) DeleteObservations(deletions []ObservationDeletion) error
 			}
 		}
 	}
-	
+
 	return j.saveGraph(graph)
 }
 
@@ -372,32 +372,32 @@ func (j *JSONLStorage) SearchNodes(query string) (*KnowledgeGraph, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if query == "" {
 		return &KnowledgeGraph{Entities: []Entity{}, Relations: []Relation{}}, nil
 	}
-	
+
 	queryLower := strings.ToLower(query)
 	result := &KnowledgeGraph{
 		Entities:  []Entity{},
 		Relations: []Relation{},
 	}
-	
+
 	// Search entities
 	matchedEntityNames := make(map[string]bool)
 	for _, entity := range fullGraph.Entities {
 		matched := false
-		
+
 		// Check name
 		if strings.Contains(strings.ToLower(entity.Name), queryLower) {
 			matched = true
 		}
-		
+
 		// Check type
 		if !matched && strings.Contains(strings.ToLower(entity.EntityType), queryLower) {
 			matched = true
 		}
-		
+
 		// Check observations
 		if !matched {
 			for _, obs := range entity.Observations {
@@ -407,20 +407,20 @@ func (j *JSONLStorage) SearchNodes(query string) (*KnowledgeGraph, error) {
 				}
 			}
 		}
-		
+
 		if matched {
 			result.Entities = append(result.Entities, entity)
 			matchedEntityNames[entity.Name] = true
 		}
 	}
-	
+
 	// Include relations involving matched entities
 	for _, relation := range fullGraph.Relations {
 		if matchedEntityNames[relation.From] || matchedEntityNames[relation.To] {
 			result.Relations = append(result.Relations, relation)
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -430,36 +430,36 @@ func (j *JSONLStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if len(names) == 0 {
 		return &KnowledgeGraph{Entities: []Entity{}, Relations: []Relation{}}, nil
 	}
-	
+
 	// Create set for quick lookup
 	nameSet := make(map[string]bool)
 	for _, name := range names {
 		nameSet[name] = true
 	}
-	
+
 	result := &KnowledgeGraph{
 		Entities:  []Entity{},
 		Relations: []Relation{},
 	}
-	
+
 	// Get requested entities
 	for _, entity := range fullGraph.Entities {
 		if nameSet[entity.Name] {
 			result.Entities = append(result.Entities, entity)
 		}
 	}
-	
+
 	// Get relations involving requested entities
 	for _, relation := range fullGraph.Relations {
 		if nameSet[relation.From] || nameSet[relation.To] {
 			result.Relations = append(result.Relations, relation)
 		}
 	}
-	
+
 	return result, nil
 }
 

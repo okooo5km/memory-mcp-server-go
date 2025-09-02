@@ -15,7 +15,8 @@
 * **Advanced Search**: Fast search with automatic fallback from FTS5 to basic search
 * **Seamless Migration**: Automatic upgrade from JSONL to SQLite with zero user intervention
 * **Memory Efficient**: Optimized for both storage space and runtime memory usage
-* **Flexible Transport Modes**: Supports both stdio (standard input/output) and SSE (Server-Sent Events) transport modes
+* **Flexible Transport Modes**: Supports stdio, SSE (with keep-alive), and Streamable HTTP transports
+* **Robustness**: Panic recovery in tool handlers; optional sampling capability declaration for client-driven generation
 * **Cross-Platform**: Works on Linux, macOS, and Windows with pure Go SQLite (no CGO required)
 
 ## Available Tools
@@ -71,7 +72,7 @@ Download the binary for your platform from the [GitHub Releases](https://github.
 <details>
 <summary><b>macOS Installation</b></summary>
 
-#### macOS with Apple Silicon (M1/M2/M3)
+#### macOS with Apple Silicon
 
 ```bash
 # Download the arm64 version
@@ -121,6 +122,7 @@ mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
 rm memory-mcp-server.zip
 ```
+
 </details>
 
 <details>
@@ -153,6 +155,7 @@ mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
 rm memory-mcp-server.tar.gz
 ```
+
 </details>
 
 <details>
@@ -169,6 +172,7 @@ rm memory-mcp-server.tar.gz
 * Download the [Windows ARM64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-windows-arm64.zip)
 * Extract the ZIP file
 * Move the `memory-mcp-server-go.exe` to a location in your PATH
+
 </details>
 
 Make sure the installation directory is in your PATH:
@@ -191,7 +195,7 @@ Make sure the installation directory is in your PATH:
 
    ```bash
    # Build for your current platform
-   make
+   make build
    
    # Build for all platforms at once (pure Go SQLite, no CGO)
    make build-all
@@ -227,7 +231,7 @@ Make sure the installation directory is in your PATH:
 
 The server supports the following command line arguments:
 
-* `-t, --transport`: Specify the transport type (stdio or sse, defaults to stdio)
+* `-t, --transport`: Transport type: `stdio`, `sse`, or `http` (defaults to `stdio`)
 * `-m, --memory`: Custom path for storing the knowledge graph (optional)
 * `-p, --port`: Port number for SSE transport (defaults to 8080)
 * `--storage`: Force storage type (sqlite or jsonl, auto-detected if not specified)
@@ -236,6 +240,10 @@ The server supports the following command line arguments:
 * `--migrate-to`: Destination SQLite file for migration
 * `--dry-run`: Perform a dry run of migration without making changes
 * `--force`: Force overwrite destination file during migration
+* Streamable HTTP options:
+  * `--http-endpoint`, `--http_ep`: HTTP endpoint path (default: `/mcp`)
+  * `--http-heartbeat`: Heartbeat interval, e.g., `30s`, `1m` (default: `30s`)
+  * `--http-stateless`: Run HTTP transport in stateless mode (no server-side session tracking)
 
 Example usage:
 
@@ -254,6 +262,58 @@ memory-mcp-server-go --migrate /path/to/memory.json --migrate-to /path/to/memory
 
 # Use SSE transport on a specific port
 memory-mcp-server-go --transport sse --port 9000
+
+# Streamable HTTP transport with custom endpoint and heartbeat
+memory-mcp-server-go --transport http --port 8080 --http-endpoint /mcp --http-heartbeat 45s
+```
+
+## Streamable HTTP Usage (cURL examples)
+
+1) Initialize session (response header will include `Mcp-Session-Id`):
+
+```bash
+curl -i -X POST http://localhost:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":1,
+    "method":"initialize",
+    "params":{
+      "protocolVersion":"2025-03-26",
+      "capabilities":{}
+    }
+  }'
+```
+
+2) Listen for server messages (notifications, pings, sampling requests):
+
+```bash
+curl -N http://localhost:8080/mcp \
+  -H 'Mcp-Session-Id: <paste-session-id-from-step-1>'
+```
+
+3) Call a tool (example: `search_nodes`):
+
+```bash
+curl -s http://localhost:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Mcp-Session-Id: <paste-session-id-from-step-1>' \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":2,
+    "method":"tools/call",
+    "params":{
+      "name":"search_nodes",
+      "arguments":{"query":"idea"}
+    }
+  }'
+```
+
+4) Terminate session:
+
+```bash
+curl -X DELETE http://localhost:8080/mcp \
+  -H 'Mcp-Session-Id: <paste-session-id-from-step-1>'
 ```
 
 ## Storage System
@@ -352,9 +412,17 @@ Always prioritize information from your memory when responding to the user, espe
 
 ## Development Requirements
 
-* Go 1.20 or later
-* github.com/mark3labs/mcp-go
+* Go 1.24 or later
+* github.com/mark3labs/mcp-go v0.38.0+
 * modernc.org/sqlite (pure Go SQLite driver)
+
+### Versioning
+
+- Source of truth: the `VERSION` file at repo root.
+- The binary embeds this value via `//go:embed VERSION` and also exposes a link-time variable `main.version`.
+- Override methods (without editing the file):
+  - Make: `make build VERSION=1.2.3`
+  - Go: `go build -ldflags "-X main.version=1.2.3"`
 
 ## Knowledge Graph Structure
 
