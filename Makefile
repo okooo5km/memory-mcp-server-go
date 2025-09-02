@@ -122,3 +122,4 @@ help:
 	@echo "  VERSION      Version string for -ldflags (default: git describe or 0.2.2)"
 	@echo "  CGO_ENABLED  0 for pure Go builds (default: 0)"
 	@echo "  GO           Go command (default: go)"
+SHELL := /usr/bin/env bash

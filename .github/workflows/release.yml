@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v1.2.3)'
+        required: false
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+
+      - name: Prepare
+        run: |
+          if [ -z "${RELEASE_VERSION}" ]; then
+            echo "RELEASE_VERSION is empty. For workflow_dispatch, provide 'version' input (e.g., v1.2.3)." >&2
+            exit 1
+          fi
+          echo "Releasing ${RELEASE_VERSION}"
+
+      - name: Build all platforms
+        run: |
+          make deps
+          make build-all VERSION=${RELEASE_VERSION#v}
+          make dist VERSION=${RELEASE_VERSION#v}
+
+      - name: Generate changelog from conventional commits
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v5
+        with:
+          configurationJson: |
+            {
+              "template": "## Changelog\n\n{changelog}",
+              "empty_template": "## Changelog\n\n_No changes detected_",
+              "categories": [
+                {"title": "### ✨ Features", "labels": [], "commits": ["feat", "feature"]},
+                {"title": "### 🐛 Fixes", "labels": [], "commits": ["fix"]},
+                {"title": "### ⚡ Performance", "labels": [], "commits": ["perf", "performance"]},
+                {"title": "### ♻️ Refactor", "labels": [], "commits": ["refactor"]},
+                {"title": "### 📝 Docs", "labels": [], "commits": ["docs", "doc"]},
+                {"title": "### 🧪 Tests", "labels": [], "commits": ["test", "tests"]},
+                {"title": "### 🛠 Build/CI", "labels": [], "commits": ["build", "ci"]},
+                {"title": "### 🔧 Chore", "labels": [], "commits": ["chore"]}
+              ],
+              "commit_template": "- {title}",
+              "useCommits": true,
+              "max_tags_to_fetch": 200
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble release body (fallback to git log if empty)
+        run: |
+          set -euo pipefail
+          BODY_FILE=RELEASE_BODY.md
+          CHANGELOG_CONTENT="${{ steps.changelog.outputs.changelog }}"
+          if [ -n "$CHANGELOG_CONTENT" ] && [ "$CHANGELOG_CONTENT" != "## Changelog\n\n_No changes detected_" ]; then
+            printf "%s" "$CHANGELOG_CONTENT" > "$BODY_FILE"
+          else
+            current_tag="${RELEASE_VERSION}"
+            prev_tag=$(git tag --list 'v*' --sort=-v:refname | sed -n 2p || true)
+            if [ -z "$prev_tag" ]; then
+              echo "## Changelog" > "$BODY_FILE"
+              echo "\n_No previous tag found; listing recent commits_\n" >> "$BODY_FILE"
+              git log -n 50 --pretty=format:'- %s (%h)' >> "$BODY_FILE" || true
+            else
+              echo "## Changelog" > "$BODY_FILE"
+              echo "\nChanges from $prev_tag to $current_tag\n" >> "$BODY_FILE"
+              git log "$prev_tag..$current_tag" --pretty=format:'- %s (%h)' >> "$BODY_FILE" || true
+            fi
+          fi
+
+      - name: Generate checksums
+        run: |
+          cd .build/dist
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: ${{ env.RELEASE_VERSION }}
+          draft: false
+          prerelease: ${{ contains(env.RELEASE_VERSION, '-') }}
+          generate_release_notes: false
+          body_path: RELEASE_BODY.md
+          files: |
+            .build/dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

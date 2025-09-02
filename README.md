@@ -75,53 +75,38 @@ Download the binary for your platform from the [GitHub Releases](https://github.
 #### macOS with Apple Silicon
 
 ```bash
-# Download the arm64 version
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-macos-arm64.zip -o memory-mcp-server.zip
-unzip memory-mcp-server.zip
+# Download the arm64 build (.tgz)
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-darwin-arm64.tgz -o memory-mcp-server.tgz
+tar -xzf memory-mcp-server.tgz
 chmod +x memory-mcp-server-go
 
 # Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine memory-mcp-server-go
+xattr -d com.apple.quarantine memory-mcp-server-go || true
 
 # Install to your local bin directory
 mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
-rm memory-mcp-server.zip
+rm memory-mcp-server.tgz
 ```
 
 #### macOS with Intel Processor
 
 ```bash
-# Download the x86_64 version
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-macos-x86_64.zip -o memory-mcp-server.zip
-unzip memory-mcp-server.zip
+# Download the x86_64 build (.tgz)
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-darwin-amd64.tgz -o memory-mcp-server.tgz
+tar -xzf memory-mcp-server.tgz
 chmod +x memory-mcp-server-go
 
 # Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine memory-mcp-server-go
+xattr -d com.apple.quarantine memory-mcp-server-go || true
 
 # Install to your local bin directory
 mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
-rm memory-mcp-server.zip
+rm memory-mcp-server.tgz
 ```
 
-#### macOS Universal Binary (works on both Apple Silicon and Intel)
-
-```bash
-# Download the universal version
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-macos-universal.zip -o memory-mcp-server.zip
-unzip memory-mcp-server.zip
-chmod +x memory-mcp-server-go
-
-# Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine memory-mcp-server-go
-
-# Install to your local bin directory
-mkdir -p ~/.local/bin
-mv memory-mcp-server-go ~/.local/bin/
-rm memory-mcp-server.zip
-```
+<!-- Universal binary is not provided in current releases. -->
 
 </details>
 
@@ -131,29 +116,29 @@ rm memory-mcp-server.zip
 #### Linux on x86_64 (most common)
 
 ```bash
-# Download the amd64 version
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-amd64.tar.gz -o memory-mcp-server.tar.gz
-tar -xzf memory-mcp-server.tar.gz
+# Download the amd64 build (.tgz)
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-amd64.tgz -o memory-mcp-server.tgz
+tar -xzf memory-mcp-server.tgz
 chmod +x memory-mcp-server-go
 
 # Install to your local bin directory
 mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
-rm memory-mcp-server.tar.gz
+rm memory-mcp-server.tgz
 ```
 
 #### Linux on ARM64 (e.g., Raspberry Pi 4, AWS Graviton)
 
 ```bash
-# Download the arm64 version
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-arm64.tar.gz -o memory-mcp-server.tar.gz
-tar -xzf memory-mcp-server.tar.gz
+# Download the arm64 build (.tgz)
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-arm64.tgz -o memory-mcp-server.tgz
+tar -xzf memory-mcp-server.tgz
 chmod +x memory-mcp-server-go
 
 # Install to your local bin directory
 mkdir -p ~/.local/bin
 mv memory-mcp-server-go ~/.local/bin/
-rm memory-mcp-server.tar.gz
+rm memory-mcp-server.tgz
 ```
 
 </details>
@@ -179,6 +164,14 @@ Make sure the installation directory is in your PATH:
 
 * **macOS/Linux**: Add `export PATH="$HOME/.local/bin:$PATH"` to your shell configuration file (`.bashrc`, `.zshrc`, etc.)
 * **Windows**: Add the directory to your system PATH through the System Properties > Environment Variables dialog
+
+Optionally verify checksums (recommended): releases include `SHA256SUMS.txt`.
+
+```bash
+# macOS/Linux example
+cd ~/.local/bin/..  # where you downloaded the artifact
+shasum -a 256 -c SHA256SUMS.txt | grep memory-mcp-server-go || true
+```
 
 ### Option 2: Build from Source
 
