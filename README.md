@@ -257,6 +257,8 @@ The server supports the following command line arguments:
   * `--http-endpoint`, `--http_ep`: HTTP endpoint path (default: `/mcp`)
   * `--http-heartbeat`: Heartbeat interval, e.g., `30s`, `1m` (default: `30s`)
   * `--http-stateless`: Run HTTP transport in stateless mode (no server-side session tracking)
+* Authentication:
+  * `--auth-bearer <token>`: Require `Authorization: Bearer <token>` for SSE and Streamable HTTP endpoints
 
 Example usage:
 
@@ -278,6 +280,9 @@ memory-mcp-server-go --transport sse --port 9000
 
 # Streamable HTTP transport with custom endpoint and heartbeat
 memory-mcp-server-go --transport http --port 8080 --http-endpoint /mcp --http-heartbeat 45s
+
+# Enable Bearer authentication (applies to SSE/HTTP)
+memory-mcp-server-go --transport http --port 8080 --http-endpoint /mcp --auth-bearer mytoken
 ```
 
 ## Streamable HTTP Usage (cURL examples)
@@ -287,6 +292,8 @@ memory-mcp-server-go --transport http --port 8080 --http-endpoint /mcp --http-he
 ```bash
 curl -i -X POST http://localhost:8080/mcp \
   -H 'Content-Type: application/json' \
+  # If started with --auth-bearer, include the header below
+  -H 'Authorization: Bearer mytoken' \
   -d '{
     "jsonrpc":"2.0",
     "id":1,
@@ -302,6 +309,7 @@ curl -i -X POST http://localhost:8080/mcp \
 
 ```bash
 curl -N http://localhost:8080/mcp \
+  -H 'Authorization: Bearer mytoken' \
   -H 'Mcp-Session-Id: <paste-session-id-from-step-1>'
 ```
 
@@ -310,6 +318,7 @@ curl -N http://localhost:8080/mcp \
 ```bash
 curl -s http://localhost:8080/mcp \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer mytoken' \
   -H 'Mcp-Session-Id: <paste-session-id-from-step-1>' \
   -d '{
     "jsonrpc":"2.0",
@@ -326,8 +335,48 @@ curl -s http://localhost:8080/mcp \
 
 ```bash
 curl -X DELETE http://localhost:8080/mcp \
+  -H 'Authorization: Bearer mytoken' \
   -H 'Mcp-Session-Id: <paste-session-id-from-step-1>'
 ```
+
+### SSE Usage with Bearer (optional)
+
+When running `--transport sse` with `--auth-bearer mytoken`:
+
+```bash
+# Connect SSE stream
+curl -N http://localhost:8080/sse -H 'Authorization: Bearer mytoken'
+
+# Send a JSON-RPC message
+curl -s -X POST http://localhost:8080/message \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer mytoken' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}'
+```
+
+## Security & Deployment
+
+- Always deploy behind TLS. Terminate HTTPS at a reverse proxy (Nginx/Caddy/Traefik) and bind this server to localhost.
+- Require authentication in any non-local environment: `--auth-bearer $(openssl rand -hex 32)` and rotate regularly.
+- Make sure your proxy forwards the `Authorization` header to the backend. Example (Nginx):
+
+```nginx
+location /mcp {
+  proxy_set_header Authorization $http_authorization;
+  proxy_pass http://127.0.0.1:8080/mcp;
+}
+location /sse {
+  proxy_set_header Authorization $http_authorization;
+  proxy_pass http://127.0.0.1:8080/sse;
+}
+location /message {
+  proxy_set_header Authorization $http_authorization;
+  proxy_pass http://127.0.0.1:8080/message;
+}
+```
+
+- SSE endpoint sets `Access-Control-Allow-Origin: *`. Do not rely on browser origin checks; enforce auth at the proxy and server.
+- Limit exposure: open only required ports, run as a non-root user, and enable rate limiting at the proxy if serving untrusted clients.
 
 ## Storage System
 

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -310,6 +311,8 @@ func main() {
 	var httpEndpoint string
 	var httpHeartbeat string
 	var httpStateless bool
+	// Auth options
+	var authBearer string
 
 	// Override the default usage message
 	flag.Usage = printUsage
@@ -339,6 +342,9 @@ func main() {
 	flag.StringVar(&httpEndpoint, "http_ep", "/mcp", "Streamable HTTP endpoint path (alias)")
 	flag.StringVar(&httpHeartbeat, "http-heartbeat", "30s", "Streamable HTTP heartbeat interval, e.g. 30s, 1m")
 	flag.BoolVar(&httpStateless, "http-stateless", false, "Run Streamable HTTP in stateless mode (no session tracking)")
+
+	// Auth flags
+	flag.StringVar(&authBearer, "auth-bearer", "", "Require Authorization: Bearer <token> for SSE/HTTP transports")
 
 	flag.Parse()
 
@@ -785,11 +791,35 @@ func main() {
 		}
 	case "sse":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on SSE")
+
+		// Wrap handlers with optional bearer auth
+		authWrap := func(next http.Handler) http.Handler {
+			if authBearer == "" {
+				return next
+			}
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				expected := "Bearer " + authBearer
+				if h := strings.TrimSpace(r.Header.Get("Authorization")); h == expected {
+					next.ServeHTTP(w, r)
+					return
+				}
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			})
+		}
+
+		mux := http.NewServeMux()
+		customSrv := &http.Server{Handler: mux}
+		// Build SSE server using custom http.Server so Start() uses our mux
 		sseServer := server.NewSSEServer(
 			s,
 			server.WithBaseURL(fmt.Sprintf("http://localhost:%d", port)),
 			server.WithKeepAliveInterval(30*time.Second),
+			server.WithHTTPServer(customSrv),
 		)
+		mux.Handle("/sse", authWrap(sseServer.SSEHandler()))
+		mux.Handle("/message", authWrap(sseServer.MessageHandler()))
+
 		log.Printf("SSE listening on :%d\n", port)
 		// Start in background and handle graceful shutdown
 		errCh := make(chan error, 1)
@@ -817,20 +847,40 @@ func main() {
 		if d, err := time.ParseDuration(httpHeartbeat); err == nil {
 			hb = d
 		}
-		// Build options
+		// Build options (endpointPath not used when mounting with custom mux)
 		httpOpts := []server.StreamableHTTPOption{
-			server.WithEndpointPath(httpEndpoint),
 			server.WithHeartbeatInterval(hb),
 		}
 		if httpStateless {
 			httpOpts = append(httpOpts, server.WithStateLess(true))
 		}
-		httpServer := server.NewStreamableHTTPServer(s, httpOpts...)
+
+		// Auth wrapper
+		authWrap := func(next http.Handler) http.Handler {
+			if authBearer == "" {
+				return next
+			}
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				expected := "Bearer " + authBearer
+				if h := strings.TrimSpace(r.Header.Get("Authorization")); h == expected {
+					next.ServeHTTP(w, r)
+					return
+				}
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			})
+		}
+
+		mux := http.NewServeMux()
+		customSrv := &http.Server{Handler: mux}
+		streamSrv := server.NewStreamableHTTPServer(s, append(httpOpts, server.WithStreamableHTTPServer(customSrv))...)
+		mux.Handle(httpEndpoint, authWrap(streamSrv))
+
 		log.Printf("Streamable HTTP listening on http://localhost:%d%s\n", port, httpEndpoint)
 
 		// Start in background and handle graceful shutdown
 		errCh := make(chan error, 1)
-		go func() { errCh <- httpServer.Start(fmt.Sprintf(":%d", port)) }()
+		go func() { errCh <- streamSrv.Start(fmt.Sprintf(":%d", port)) }()
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		select {
@@ -838,7 +888,7 @@ func main() {
 			log.Printf("Received %s, shutting down HTTP...", sig)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := httpServer.Shutdown(ctx); err != nil {
+			if err := streamSrv.Shutdown(ctx); err != nil {
 				log.Printf("HTTP shutdown error: %v", err)
 			}
 		case err := <-errCh:

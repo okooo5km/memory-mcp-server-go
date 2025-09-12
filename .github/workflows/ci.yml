@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ["**"]
+    tags: ['v*']
   pull_request:
     branches: ["**"]
 
@@ -17,6 +18,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # fetch full history for better diffs
+          fetch-tags: true # ensure tags are available for versioning
 
       - name: Setup Go
         uses: actions/setup-go@v5

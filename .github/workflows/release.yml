@@ -20,6 +20,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # required for git tag/changelog fallback
+          fetch-tags: true
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -34,6 +37,15 @@ jobs:
             exit 1
           fi
           echo "Releasing ${RELEASE_VERSION}"
+
+      - name: Tidy (check no diff)
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Lint (fmt + vet)
+        run: |
+          make check
 
       - name: Build all platforms
         run: |
