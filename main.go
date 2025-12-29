@@ -412,6 +412,8 @@ func main() {
 	// Add create_entities tool
 	createEntitiesTool := mcp.NewTool("create_entities",
 		mcp.WithDescription("Create multiple new entities in the knowledge graph"),
+		mcp.WithTitleAnnotation("Create Entities"),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithArray("entities",
 			mcp.Required(),
 			mcp.Description("An array of entities to create"),
@@ -442,6 +444,8 @@ func main() {
 	// Add create_relations tool
 	createRelationsTool := mcp.NewTool("create_relations",
 		mcp.WithDescription("Create multiple new relations between entities in the knowledge graph. Relations should be in active voice"),
+		mcp.WithTitleAnnotation("Create Relations"),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithArray("relations",
 			mcp.Required(),
 			mcp.Description("An array of relations to create"),
@@ -469,6 +473,8 @@ func main() {
 	// Add add_observations tool
 	addObservationsTool := mcp.NewTool("add_observations",
 		mcp.WithDescription("Add new observations to existing entities in the knowledge graph"),
+		mcp.WithTitleAnnotation("Add Observations"),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithArray("observations",
 			mcp.Required(),
 			mcp.Description("An array of observations to add to entities"),
@@ -495,6 +501,8 @@ func main() {
 	// Add delete_entities tool
 	deleteEntitiesTool := mcp.NewTool("delete_entities",
 		mcp.WithDescription("Delete multiple entities and their associated relations from the knowledge graph"),
+		mcp.WithTitleAnnotation("Delete Entities"),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithArray("entityNames",
 			mcp.Required(),
 			mcp.Description("An array of entity names to delete"),
@@ -507,6 +515,8 @@ func main() {
 	// Add delete_observations tool
 	deleteObservationsTool := mcp.NewTool("delete_observations",
 		mcp.WithDescription("Delete specific observations from entities in the knowledge graph"),
+		mcp.WithTitleAnnotation("Delete Observations"),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithArray("deletions",
 			mcp.Required(),
 			mcp.Description("An array of observations to delete from entities"),
@@ -533,6 +543,8 @@ func main() {
 	// Add delete_relations tool
 	deleteRelationsTool := mcp.NewTool("delete_relations",
 		mcp.WithDescription("Delete multiple relations from the knowledge graph"),
+		mcp.WithTitleAnnotation("Delete Relations"),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithArray("relations",
 			mcp.Required(),
 			mcp.Description("An array of relations to delete"),
@@ -560,11 +572,15 @@ func main() {
 	// Add read_graph tool
 	readGraphTool := mcp.NewTool("read_graph",
 		mcp.WithDescription("Read the entire knowledge graph. WARNING: Can be slow and memory-intensive for large graphs. Consider using search_nodes or open_nodes for specific queries instead. Use this when you need a complete overview or full backup of the graph"),
+		mcp.WithTitleAnnotation("Read Graph"),
+		mcp.WithReadOnlyHintAnnotation(true),
 	)
 
 	// Add search_nodes tool
 	searchNodesTool := mcp.NewTool("search_nodes",
 		mcp.WithDescription("Search nodes in the knowledge graph. IMPORTANT: Multiple words with spaces become exact phrase search (e.g., 'product idea' only finds exact phrase). For broader results, search single core words separately. Best practice: Split compound queries - instead of '产品idea' search 'product' OR 'idea'; instead of '近视参数' search '近视'; instead of 'user feedback' search 'user' OR 'feedback'"),
+		mcp.WithTitleAnnotation("Search Nodes"),
+		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Search query. BEHAVIOR: Single word = prefix match (e.g., 'prod' finds product*). Multiple words = exact phrase (e.g., 'product idea' requires both words together). STRATEGY: Use single words for broader results. Examples: '产品' (not '产品idea'), 'idea' (finds idea/ideas), '近视' (not '近视参数'), 'feedback' (not 'user feedback')"),
@@ -574,6 +590,8 @@ func main() {
 	// Add open_nodes tool
 	openNodesTool := mcp.NewTool("open_nodes",
 		mcp.WithDescription("Retrieve specific nodes by exact name match. Use this when you know the precise entity names. For fuzzy/partial matching, use search_nodes instead. Example: open_nodes(['Orchard']) retrieves only the entity named 'Orchard', not 'Orchard Inc' or 'Orchard产品'"),
+		mcp.WithTitleAnnotation("Open Nodes"),
+		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithArray("names",
 			mcp.Required(),
 			mcp.Description("Array of exact entity names to retrieve. Must match exactly. For partial matches, use search_nodes first to find the exact names"),
