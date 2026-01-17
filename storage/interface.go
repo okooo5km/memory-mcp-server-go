@@ -23,12 +23,50 @@ type Relation struct {
 type KnowledgeGraph struct {
 	Entities  []Entity   `json:"entities"`
 	Relations []Relation `json:"relations"`
+	Truncated bool       `json:"truncated,omitempty"` // true if any data was truncated
 }
 
 // ObservationDeletion specifies which observations to delete
 type ObservationDeletion struct {
 	EntityName   string   `json:"entityName"`
 	Observations []string `json:"observations"`
+}
+
+// EntitySummary is a lightweight entity representation for list results
+type EntitySummary struct {
+	Name       string `json:"name"`
+	EntityType string `json:"entityType"`
+}
+
+// EntitySearchHit represents a search result with preview snippets
+type EntitySearchHit struct {
+	Name              string   `json:"name"`
+	EntityType        string   `json:"entityType"`
+	Snippets          []string `json:"snippets"`          // matched observation snippets (max 2)
+	ObservationsCount int      `json:"observationsCount"` // total observations count
+	RelationsCount    int      `json:"relationsCount"`    // related relations count
+}
+
+// SearchResult holds search results with pagination info
+type SearchResult struct {
+	Entities []EntitySearchHit `json:"entities"`
+	Total    int               `json:"total"`
+	Limit    int               `json:"limit"`
+	HasMore  bool              `json:"hasMore"`
+}
+
+// GraphSummary holds a lightweight summary of the entire graph
+type GraphSummary struct {
+	// Statistics
+	TotalEntities  int            `json:"totalEntities"`
+	TotalRelations int            `json:"totalRelations"`
+	EntityTypes    map[string]int `json:"entityTypes"`   // type -> count
+	RelationTypes  map[string]int `json:"relationTypes"` // type -> count
+
+	// Entity list (limited)
+	Entities []EntitySummary `json:"entities"`
+	Limit    int             `json:"limit"`
+	HasMore  bool            `json:"hasMore"`
 }
 
 // Storage defines the interface for knowledge graph persistence
@@ -52,8 +90,8 @@ type Storage interface {
 	DeleteObservations(deletions []ObservationDeletion) error
 
 	// Query operations
-	ReadGraph() (*KnowledgeGraph, error)
-	SearchNodes(query string) (*KnowledgeGraph, error)
+	ReadGraph(mode string, limit int) (interface{}, error) // mode: "summary" or "full"
+	SearchNodes(query string, limit int) (*SearchResult, error)
 	OpenNodes(names []string) (*KnowledgeGraph, error)
 
 	// Migration support

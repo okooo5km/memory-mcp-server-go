@@ -248,22 +248,18 @@ func (m *KnowledgeGraphManager) DeleteRelations(relations []storage.Relation) er
 	return m.storage.DeleteRelations(relations)
 }
 
-// ReadGraph returns the entire knowledge graph
-func (m *KnowledgeGraphManager) ReadGraph() (storage.KnowledgeGraph, error) {
-	graph, err := m.storage.ReadGraph()
-	if err != nil {
-		return storage.KnowledgeGraph{}, err
-	}
-	return *graph, nil
+// ReadGraph returns either a summary or full graph based on mode
+func (m *KnowledgeGraphManager) ReadGraph(mode string, limit int) (interface{}, error) {
+	return m.storage.ReadGraph(mode, limit)
 }
 
-// SearchNodes searches for nodes in the knowledge graph based on a query
-func (m *KnowledgeGraphManager) SearchNodes(query string) (storage.KnowledgeGraph, error) {
-	graph, err := m.storage.SearchNodes(query)
+// SearchNodes searches for nodes in the knowledge graph and returns lightweight summaries
+func (m *KnowledgeGraphManager) SearchNodes(query string, limit int) (storage.SearchResult, error) {
+	result, err := m.storage.SearchNodes(query, limit)
 	if err != nil {
-		return storage.KnowledgeGraph{}, err
+		return storage.SearchResult{}, err
 	}
-	return *graph, nil
+	return *result, nil
 }
 
 // OpenNodes opens specific nodes in the knowledge graph by their names
@@ -571,30 +567,39 @@ func main() {
 
 	// Add read_graph tool
 	readGraphTool := mcp.NewTool("read_graph",
-		mcp.WithDescription("Read the entire knowledge graph. WARNING: Can be slow and memory-intensive for large graphs. Consider using search_nodes or open_nodes for specific queries instead. Use this when you need a complete overview or full backup of the graph"),
+		mcp.WithDescription("Get knowledge graph data. Default mode=summary returns statistics and entity list. Use mode=full for complete graph export/backup."),
 		mcp.WithTitleAnnotation("Read Graph"),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("mode",
+			mcp.Description("'summary' (default): stats + entity names; 'full': complete graph with all entities, observations and relations"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Max entity names in summary mode (default: 50, max: 200). Ignored in full mode."),
+		),
 	)
 
 	// Add search_nodes tool
 	searchNodesTool := mcp.NewTool("search_nodes",
-		mcp.WithDescription("Search nodes in the knowledge graph. IMPORTANT: Multiple words with spaces become exact phrase search (e.g., 'product idea' only finds exact phrase). For broader results, search single core words separately. Best practice: Split compound queries - instead of '产品idea' search 'product' OR 'idea'; instead of '近视参数' search '近视'; instead of 'user feedback' search 'user' OR 'feedback'"),
+		mcp.WithDescription("Search nodes and return results with context snippets around matched keywords. Returns name, type, keyword-context snippets, and counts. For complete entity details (all observations/relations), use open_nodes with the entity names from search results."),
 		mcp.WithTitleAnnotation("Search Nodes"),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Search query. BEHAVIOR: Single word = prefix match (e.g., 'prod' finds product*). Multiple words = exact phrase (e.g., 'product idea' requires both words together). STRATEGY: Use single words for broader results. Examples: '产品' (not '产品idea'), 'idea' (finds idea/ideas), '近视' (not '近视参数'), 'feedback' (not 'user feedback')"),
+			mcp.Description("Search query. Multiple keywords separated by spaces = OR search. Examples: '产品' (single), '产品 用户' (finds entities matching either)."),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Max entities to return. If not specified, returns all matches."),
 		),
 	)
 
 	// Add open_nodes tool
 	openNodesTool := mcp.NewTool("open_nodes",
-		mcp.WithDescription("Retrieve specific nodes by exact name match. Use this when you know the precise entity names. For fuzzy/partial matching, use search_nodes instead. Example: open_nodes(['Orchard']) retrieves only the entity named 'Orchard', not 'Orchard Inc' or 'Orchard产品'"),
+		mcp.WithDescription("Get full details of specific entities by exact name. Returns complete observations and relations. Use search_nodes first to find entity names if unsure."),
 		mcp.WithTitleAnnotation("Open Nodes"),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithArray("names",
 			mcp.Required(),
-			mcp.Description("Array of exact entity names to retrieve. Must match exactly. For partial matches, use search_nodes first to find the exact names"),
+			mcp.Description("Exact entity names to retrieve. Get names from search_nodes results."),
 			mcp.Items(map[string]any{
 				"type": "string",
 			}),
@@ -739,14 +744,40 @@ func main() {
 	})
 
 	s.AddTool(readGraphTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Read the entire graph
-		graph, err := manager.ReadGraph()
+		var arg struct {
+			Mode  *string `json:"mode"`
+			Limit *int    `json:"limit"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+
+		// Default mode is "summary"
+		mode := "summary"
+		if arg.Mode != nil && *arg.Mode == "full" {
+			mode = "full"
+		}
+
+		// Apply default and max limits (only relevant for summary mode)
+		limit := 50
+		if arg.Limit != nil {
+			limit = *arg.Limit
+			if limit > 200 {
+				limit = 200
+			}
+			if limit < 1 {
+				limit = 50
+			}
+		}
+
+		// Get graph data
+		result, err := manager.ReadGraph(mode, limit)
 		if err != nil {
 			return nil, err
 		}
 
 		// Convert result to JSON
-		resultJSON, err := json.MarshalIndent(graph, "", "  ")
+		resultJSON, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return nil, err
 		}
@@ -755,13 +786,29 @@ func main() {
 	})
 
 	s.AddTool(searchNodesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query, err := request.RequireString("query")
-		if err != nil {
+		var arg struct {
+			Query string `json:"query"`
+			Limit *int   `json:"limit"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if arg.Query == "" {
 			return nil, errors.New("missing required parameter: query")
 		}
 
+		// If limit not specified, use 0 to indicate "all results"
+		// If specified, apply reasonable bounds
+		limit := 0
+		if arg.Limit != nil {
+			limit = *arg.Limit
+			if limit < 1 {
+				limit = 0 // treat invalid as "all"
+			}
+		}
+
 		// Search nodes
-		results, err := manager.SearchNodes(query)
+		results, err := manager.SearchNodes(arg.Query, limit)
 		if err != nil {
 			return nil, err
 		}

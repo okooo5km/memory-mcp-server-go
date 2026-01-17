@@ -28,6 +28,7 @@ make dist
 ## Development Workflow
 
 ### Project Architecture
+
 1. **Layered Architecture**: Storage abstraction with pluggable backends
 2. **Storage Backends**: SQLite (preferred) and JSONL (legacy)
 3. **Auto-Migration**: Automatic upgrade from JSONL to SQLite
@@ -71,6 +72,7 @@ make build        # Verify build
 ## Testing
 
 Tests are available in `storage_test.go`:
+
 - Storage interface compatibility tests
 - Migration functionality tests
 - Run with `go test -v`
@@ -154,11 +156,13 @@ Tests are available in `storage_test.go`:
 ## Migration
 
 ### Automatic Migration
+
 - Enabled by default with `--auto-migrate=true`
 - Detects existing JSONL files and migrates to SQLite
 - Creates backup of original JSONL file
 
 ### Manual Migration
+
 ```bash
 # Migrate specific file
 ./memory-mcp-server-go --migrate=old_data.json --migrate-to=new_data.db

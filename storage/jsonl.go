@@ -361,70 +361,237 @@ func (j *JSONLStorage) DeleteObservations(deletions []ObservationDeletion) error
 	return j.saveGraph(graph)
 }
 
-// ReadGraph returns the entire knowledge graph
-func (j *JSONLStorage) ReadGraph() (*KnowledgeGraph, error) {
-	return j.loadGraph()
+// ReadGraph returns either a lightweight summary or full graph based on mode
+func (j *JSONLStorage) ReadGraph(mode string, limit int) (interface{}, error) {
+	graph, err := j.loadGraph()
+	if err != nil {
+		return nil, err
+	}
+
+	if mode == "full" {
+		return graph, nil
+	}
+
+	// Summary mode
+	summary := &GraphSummary{
+		TotalEntities:  len(graph.Entities),
+		TotalRelations: len(graph.Relations),
+		EntityTypes:    make(map[string]int),
+		RelationTypes:  make(map[string]int),
+		Entities:       []EntitySummary{},
+		Limit:          limit,
+	}
+
+	// Calculate entity type distribution
+	for _, entity := range graph.Entities {
+		summary.EntityTypes[entity.EntityType]++
+	}
+
+	// Calculate relation type distribution
+	for _, relation := range graph.Relations {
+		summary.RelationTypes[relation.RelationType]++
+	}
+
+	// Add entity summaries (limited)
+	count := 0
+	for _, entity := range graph.Entities {
+		if count >= limit {
+			break
+		}
+		summary.Entities = append(summary.Entities, EntitySummary{
+			Name:       entity.Name,
+			EntityType: entity.EntityType,
+		})
+		count++
+	}
+
+	summary.HasMore = summary.TotalEntities > limit
+
+	return summary, nil
 }
 
-// SearchNodes searches for nodes containing the query string
-func (j *JSONLStorage) SearchNodes(query string) (*KnowledgeGraph, error) {
+// SearchNodes searches for nodes and returns search hits with context snippets
+// Multiple space-separated words are treated as OR search
+func (j *JSONLStorage) SearchNodes(query string, limit int) (*SearchResult, error) {
 	fullGraph, err := j.loadGraph()
 	if err != nil {
 		return nil, err
 	}
 
+	result := &SearchResult{
+		Entities: []EntitySearchHit{},
+		Limit:    limit,
+	}
+
 	if query == "" {
-		return &KnowledgeGraph{Entities: []Entity{}, Relations: []Relation{}}, nil
+		return result, nil
 	}
 
-	queryLower := strings.ToLower(query)
-	result := &KnowledgeGraph{
-		Entities:  []Entity{},
-		Relations: []Relation{},
+	// Split query into words for OR search
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		return result, nil
 	}
 
-	// Search entities
-	matchedEntityNames := make(map[string]bool)
+	// Convert words to lowercase for case-insensitive search
+	lowerWords := make([]string, len(words))
+	for i, word := range words {
+		lowerWords[i] = strings.ToLower(word)
+	}
+
+	// Build entity name to relations count map
+	relationsCountMap := make(map[string]int)
+	for _, rel := range fullGraph.Relations {
+		relationsCountMap[rel.From]++
+		relationsCountMap[rel.To]++
+	}
+
+	// Determine max snippets per entity
+	maxSnippets := 2
+	if limit == 0 {
+		maxSnippets = 0 // unlimited snippets when no limit
+	}
+
+	// Search entities - match if ANY word matches
+	type matchedEntity struct {
+		entity          Entity
+		matchedSnippets []string
+	}
+	var matchedEntities []matchedEntity
+
 	for _, entity := range fullGraph.Entities {
 		matched := false
+		var snippets []string
 
-		// Check name
-		if strings.Contains(strings.ToLower(entity.Name), queryLower) {
-			matched = true
-		}
+		for _, queryWord := range lowerWords {
+			// Check name
+			if strings.Contains(strings.ToLower(entity.Name), queryWord) {
+				matched = true
+			}
 
-		// Check type
-		if !matched && strings.Contains(strings.ToLower(entity.EntityType), queryLower) {
-			matched = true
-		}
+			// Check type
+			if strings.Contains(strings.ToLower(entity.EntityType), queryWord) {
+				matched = true
+			}
 
-		// Check observations
-		if !matched {
+			// Check observations and collect context snippets around keywords
 			for _, obs := range entity.Observations {
-				if strings.Contains(strings.ToLower(obs), queryLower) {
+				if strings.Contains(strings.ToLower(obs), queryWord) {
 					matched = true
-					break
+					// Add context snippet if within limit
+					if maxSnippets == 0 || len(snippets) < maxSnippets {
+						snippets = append(snippets, extractKeywordContextJSON(obs, words, 50))
+					}
 				}
 			}
 		}
 
 		if matched {
-			result.Entities = append(result.Entities, entity)
-			matchedEntityNames[entity.Name] = true
+			// If no matching snippets from observations, use first observations as fallback
+			if len(snippets) == 0 && len(entity.Observations) > 0 {
+				fallbackCount := 2
+				if maxSnippets > 0 && maxSnippets < fallbackCount {
+					fallbackCount = maxSnippets
+				}
+				for i := 0; i < fallbackCount && i < len(entity.Observations); i++ {
+					snippets = append(snippets, truncateStringJSON(entity.Observations[i], 100))
+				}
+			}
+			matchedEntities = append(matchedEntities, matchedEntity{
+				entity:          entity,
+				matchedSnippets: snippets,
+			})
 		}
 	}
 
-	// Include relations involving matched entities
-	for _, relation := range fullGraph.Relations {
-		if matchedEntityNames[relation.From] || matchedEntityNames[relation.To] {
-			result.Relations = append(result.Relations, relation)
+	result.Total = len(matchedEntities)
+
+	// Apply limit and build result (limit=0 means all)
+	for i, me := range matchedEntities {
+		if limit > 0 && i >= limit {
+			break
 		}
+		result.Entities = append(result.Entities, EntitySearchHit{
+			Name:              me.entity.Name,
+			EntityType:        me.entity.EntityType,
+			Snippets:          me.matchedSnippets,
+			ObservationsCount: len(me.entity.Observations),
+			RelationsCount:    relationsCountMap[me.entity.Name],
+		})
+	}
+
+	// HasMore is only true when limit is specified and there are more results
+	if limit > 0 {
+		result.HasMore = result.Total > limit
+	} else {
+		result.HasMore = false // no limit means all results returned
 	}
 
 	return result, nil
 }
 
-// OpenNodes retrieves specific nodes by name
+// truncateStringJSON truncates a string to maxLen characters and adds "..." if truncated
+func truncateStringJSON(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
+// extractKeywordContextJSON extracts a snippet with context around the first matched keyword
+func extractKeywordContextJSON(content string, words []string, contextChars int) string {
+	contentLower := strings.ToLower(content)
+	contentRunes := []rune(content)
+	contentLen := len(contentRunes)
+
+	// Find the first matching keyword position
+	matchPos := -1
+	matchLen := 0
+	for _, word := range words {
+		wordLower := strings.ToLower(word)
+		pos := strings.Index(contentLower, wordLower)
+		if pos != -1 {
+			// Convert byte position to rune position
+			runePos := len([]rune(content[:pos]))
+			if matchPos == -1 || runePos < matchPos {
+				matchPos = runePos
+				matchLen = len([]rune(word))
+			}
+		}
+	}
+
+	// If no match found, return truncated content
+	if matchPos == -1 {
+		return truncateStringJSON(content, contextChars*2)
+	}
+
+	// Calculate start and end positions for context
+	start := matchPos - contextChars
+	if start < 0 {
+		start = 0
+	}
+	end := matchPos + matchLen + contextChars
+	if end > contentLen {
+		end = contentLen
+	}
+
+	// Build snippet with ellipsis
+	var result strings.Builder
+	if start > 0 {
+		result.WriteString("...")
+	}
+	result.WriteString(string(contentRunes[start:end]))
+	if end < contentLen {
+		result.WriteString("...")
+	}
+
+	return result.String()
+}
+
+// OpenNodes retrieves specific nodes by name with truncation protection
+const maxObservationsPerEntityJSONL = 100
+
 func (j *JSONLStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 	fullGraph, err := j.loadGraph()
 	if err != nil {
@@ -446,12 +613,28 @@ func (j *JSONLStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 		Relations: []Relation{},
 	}
 
-	// Get requested entities
+	truncated := false
+
+	// Get requested entities with truncation
 	for _, entity := range fullGraph.Entities {
 		if nameSet[entity.Name] {
-			result.Entities = append(result.Entities, entity)
+			e := Entity{
+				Name:         entity.Name,
+				EntityType:   entity.EntityType,
+				Observations: entity.Observations,
+			}
+
+			// Apply truncation if needed
+			if len(e.Observations) > maxObservationsPerEntityJSONL {
+				e.Observations = e.Observations[:maxObservationsPerEntityJSONL]
+				truncated = true
+			}
+
+			result.Entities = append(result.Entities, e)
 		}
 	}
+
+	result.Truncated = truncated
 
 	// Get relations involving requested entities
 	for _, relation := range fullGraph.Relations {

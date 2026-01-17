@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -110,32 +109,38 @@ func (s *SQLiteStorage) rebuildFTSIndex() error {
 	return nil
 }
 
-// SearchNodesWithFTS searches using FTS5 for better performance and results
-func (s *SQLiteStorage) SearchNodesWithFTS(query string) (*KnowledgeGraph, error) {
-	graph := &KnowledgeGraph{
-		Entities:  []Entity{},
-		Relations: []Relation{},
+// SearchNodesWithFTS searches using FTS5 and returns search hits with snippets
+func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResult, error) {
+	result := &SearchResult{
+		Entities: []EntitySearchHit{},
+		Limit:    limit,
 	}
 
 	if query == "" {
-		return graph, nil
+		return result, nil
 	}
 
 	// Prepare FTS query (escape special characters and add quotes for phrase search)
 	ftsQuery := prepareFTSQuery(query)
+	words := strings.Fields(query)
+
+	// Use a map to track unique entities (by ID to avoid duplicates)
+	type entityInfo struct {
+		ID         int64
+		Name       string
+		EntityType string
+		Rank       float64
+	}
+	entityMap := make(map[int64]*entityInfo)
+	var orderedIDs []int64
 
 	// Search entities using FTS
 	entityQuery := `
-		SELECT DISTINCT e.id, e.name, e.entity_type,
-		       GROUP_CONCAT(o.content, '|||') as observations,
-		       bm25(ef) as rank
+		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(ef) as rank
 		FROM entities_fts ef
 		JOIN entities e ON ef.rowid = e.id
-		LEFT JOIN observations o ON e.id = o.entity_id
 		WHERE entities_fts MATCH ?
-		GROUP BY e.id, e.name, e.entity_type
 		ORDER BY rank
-		LIMIT 100
 	`
 
 	entityRows, err := s.db.Query(entityQuery, ftsQuery)
@@ -145,46 +150,34 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string) (*KnowledgeGraph, error
 	}
 	defer entityRows.Close()
 
-	entityIDs := []int64{}
-	entityMap := make(map[int64]Entity)
-
 	for entityRows.Next() {
 		var id int64
 		var name, entityType string
-		var obsStr sql.NullString
 		var rank float64
 
-		if err := entityRows.Scan(&id, &name, &entityType, &obsStr, &rank); err != nil {
+		if err := entityRows.Scan(&id, &name, &entityType, &rank); err != nil {
 			continue
 		}
 
-		entityIDs = append(entityIDs, id)
-
-		entity := Entity{
-			Name:         name,
-			EntityType:   entityType,
-			Observations: []string{},
+		if _, exists := entityMap[id]; !exists {
+			entityMap[id] = &entityInfo{
+				ID:         id,
+				Name:       name,
+				EntityType: entityType,
+				Rank:       rank,
+			}
+			orderedIDs = append(orderedIDs, id)
 		}
-
-		if obsStr.Valid && obsStr.String != "" {
-			entity.Observations = strings.Split(obsStr.String, "|||")
-		}
-
-		entityMap[id] = entity
 	}
 
 	// Search observations using FTS
 	obsQuery := `
-		SELECT DISTINCT e.id, e.name, e.entity_type,
-		       GROUP_CONCAT(o.content, '|||') as observations,
-		       bm25(of) as rank
+		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(of) as rank
 		FROM observations_fts of
 		JOIN observations o ON of.rowid = o.id
 		JOIN entities e ON o.entity_id = e.id
 		WHERE observations_fts MATCH ?
-		GROUP BY e.id, e.name, e.entity_type
 		ORDER BY rank
-		LIMIT 100
 	`
 
 	obsRows, err := s.db.Query(obsQuery, ftsQuery)
@@ -194,86 +187,122 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string) (*KnowledgeGraph, error
 		for obsRows.Next() {
 			var id int64
 			var name, entityType string
-			var obsStr sql.NullString
 			var rank float64
 
-			if err := obsRows.Scan(&id, &name, &entityType, &obsStr, &rank); err != nil {
+			if err := obsRows.Scan(&id, &name, &entityType, &rank); err != nil {
 				continue
 			}
 
 			// Add to results if not already found
 			if _, exists := entityMap[id]; !exists {
-				entityIDs = append(entityIDs, id)
-
-				entity := Entity{
-					Name:         name,
-					EntityType:   entityType,
-					Observations: []string{},
+				entityMap[id] = &entityInfo{
+					ID:         id,
+					Name:       name,
+					EntityType: entityType,
+					Rank:       rank,
 				}
-
-				if obsStr.Valid && obsStr.String != "" {
-					entity.Observations = strings.Split(obsStr.String, "|||")
-				}
-
-				entityMap[id] = entity
+				orderedIDs = append(orderedIDs, id)
 			}
 		}
 	}
 
-	// Convert map to slice
-	for _, entity := range entityMap {
-		graph.Entities = append(graph.Entities, entity)
+	// Calculate total
+	result.Total = len(entityMap)
+
+	// Apply limit to ordered IDs (only if limit > 0)
+	limitedIDs := orderedIDs
+	if limit > 0 && len(limitedIDs) > limit {
+		limitedIDs = limitedIDs[:limit]
 	}
 
-	// Load relations for found entities
-	if len(entityIDs) > 0 {
-		placeholders := make([]string, len(entityIDs))
-		args := make([]interface{}, len(entityIDs))
-		for i, id := range entityIDs {
+	// Get snippets, observations count, and relations count for each entity
+	if len(limitedIDs) > 0 {
+		// Build placeholders for entity IDs
+		placeholders := make([]string, len(limitedIDs))
+		idArgs := make([]interface{}, len(limitedIDs))
+		for i, id := range limitedIDs {
 			placeholders[i] = "?"
-			args[i] = id
+			idArgs[i] = id
+		}
+		placeholderStr := strings.Join(placeholders, ",")
+
+		// Get observations count for each entity
+		obsCountMap := make(map[int64]int)
+		obsCountQuery := fmt.Sprintf(`
+			SELECT entity_id, COUNT(*) 
+			FROM observations 
+			WHERE entity_id IN (%s) 
+			GROUP BY entity_id
+		`, placeholderStr)
+		obsCountRows, err := s.db.Query(obsCountQuery, idArgs...)
+		if err == nil {
+			defer obsCountRows.Close()
+			for obsCountRows.Next() {
+				var entityID int64
+				var count int
+				if err := obsCountRows.Scan(&entityID, &count); err == nil {
+					obsCountMap[entityID] = count
+				}
+			}
 		}
 
-		relQuery := fmt.Sprintf(`
-			SELECT f.name, t.name, r.relation_type
-			FROM relations r
-			JOIN entities f ON r.from_entity_id = f.id
-			JOIN entities t ON r.to_entity_id = t.id
-			WHERE r.from_entity_id IN (%s) OR r.to_entity_id IN (%s)
-			ORDER BY r.created_at
-		`, strings.Join(placeholders, ","), strings.Join(placeholders, ","))
-
-		// Duplicate args for both IN clauses
-		relArgs := append(args, args...)
-
-		rows, err := s.db.Query(relQuery, relArgs...)
+		// Get relations count for each entity
+		relCountMap := make(map[int64]int)
+		relCountQuery := fmt.Sprintf(`
+			SELECT e.id, COUNT(DISTINCT r.id)
+			FROM entities e
+			LEFT JOIN relations r ON e.id = r.from_entity_id OR e.id = r.to_entity_id
+			WHERE e.id IN (%s)
+			GROUP BY e.id
+		`, placeholderStr)
+		relCountRows, err := s.db.Query(relCountQuery, idArgs...)
 		if err == nil {
-			defer rows.Close()
-
-			for rows.Next() {
-				var from, to, relType string
-				if err := rows.Scan(&from, &to, &relType); err != nil {
-					continue
+			defer relCountRows.Close()
+			for relCountRows.Next() {
+				var entityID int64
+				var count int
+				if err := relCountRows.Scan(&entityID, &count); err == nil {
+					relCountMap[entityID] = count
 				}
-
-				graph.Relations = append(graph.Relations, Relation{
-					From:         from,
-					To:           to,
-					RelationType: relType,
-				})
 			}
+		}
+
+		// Build result with snippets
+		// maxSnippets=0 means return all matched snippets when limit=0
+		maxSnippets := 2
+		if limit == 0 {
+			maxSnippets = 0 // unlimited snippets
+		}
+		for _, id := range limitedIDs {
+			info := entityMap[id]
+			hit := EntitySearchHit{
+				Name:              info.Name,
+				EntityType:        info.EntityType,
+				Snippets:          s.getMatchedSnippets(id, words, maxSnippets, 50), // 50 chars context
+				ObservationsCount: obsCountMap[id],
+				RelationsCount:    relCountMap[id],
+			}
+			result.Entities = append(result.Entities, hit)
 		}
 	}
 
-	return graph, nil
+	// HasMore is only true when limit is specified and there are more results
+	if limit > 0 {
+		result.HasMore = result.Total > limit
+	} else {
+		result.HasMore = false // no limit means all results returned
+	}
+
+	return result, nil
 }
 
 // prepareFTSQuery prepares a query string for FTS5
+// Multiple space-separated words are treated as OR search with prefix matching
 func prepareFTSQuery(query string) string {
 	// Escape special FTS characters
 	query = strings.ReplaceAll(query, `"`, `""`)
 
-	// Split into words and create a phrase query or AND query
+	// Split into words
 	words := strings.Fields(query)
 	if len(words) == 0 {
 		return `""`
@@ -284,13 +313,13 @@ func prepareFTSQuery(query string) string {
 		return fmt.Sprintf(`%s*`, words[0])
 	}
 
-	// Multiple words - try phrase search first, fallback to AND
-	if len(strings.Join(words, " ")) < 50 { // Reasonable phrase length
-		return fmt.Sprintf(`"%s"`, strings.Join(words, " "))
+	// Multiple words - use OR with prefix matching for each word
+	// This allows "十里 田野 开发者" to find entities matching ANY of these keywords
+	var parts []string
+	for _, word := range words {
+		parts = append(parts, fmt.Sprintf(`%s*`, word))
 	}
-
-	// Long query - use AND of individual words
-	return strings.Join(words, " AND ")
+	return strings.Join(parts, " OR ")
 }
 
 // GetSearchSuggestions provides search suggestions based on partial input

@@ -378,8 +378,101 @@ func (s *SQLiteStorage) DeleteObservations(deletions []ObservationDeletion) erro
 	return nil
 }
 
-// ReadGraph reads the entire knowledge graph
-func (s *SQLiteStorage) ReadGraph() (*KnowledgeGraph, error) {
+// ReadGraph returns either a lightweight summary or full graph based on mode
+func (s *SQLiteStorage) ReadGraph(mode string, limit int) (interface{}, error) {
+	if mode == "full" {
+		return s.readGraphFull()
+	}
+	return s.readGraphSummary(limit)
+}
+
+// readGraphSummary returns a lightweight summary of the knowledge graph
+func (s *SQLiteStorage) readGraphSummary(limit int) (*GraphSummary, error) {
+	summary := &GraphSummary{
+		EntityTypes:   make(map[string]int),
+		RelationTypes: make(map[string]int),
+		Entities:      []EntitySummary{},
+		Limit:         limit,
+	}
+
+	// Get total entity count
+	err := s.db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&summary.TotalEntities)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count entities: %w", err)
+	}
+
+	// Get total relation count
+	err = s.db.QueryRow("SELECT COUNT(*) FROM relations").Scan(&summary.TotalRelations)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count relations: %w", err)
+	}
+
+	// Get entity type distribution
+	rows, err := s.db.Query("SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type ORDER BY COUNT(*) DESC")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query entity types: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var entityType string
+		var count int
+		if err := rows.Scan(&entityType, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan entity type: %w", err)
+		}
+		summary.EntityTypes[entityType] = count
+	}
+
+	// Get relation type distribution
+	rows, err = s.db.Query("SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query relation types: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var relationType string
+		var count int
+		if err := rows.Scan(&relationType, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan relation type: %w", err)
+		}
+		summary.RelationTypes[relationType] = count
+	}
+
+	// Get entity list (limited)
+	rows, err = s.db.Query(`
+		SELECT name, entity_type 
+		FROM entities 
+		ORDER BY created_at DESC 
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query entities: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, entityType string
+		if err := rows.Scan(&name, &entityType); err != nil {
+			return nil, fmt.Errorf("failed to scan entity: %w", err)
+		}
+		summary.Entities = append(summary.Entities, EntitySummary{
+			Name:       name,
+			EntityType: entityType,
+		})
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating entities: %w", err)
+	}
+
+	summary.HasMore = summary.TotalEntities > limit
+
+	return summary, nil
+}
+
+// readGraphFull reads the entire knowledge graph (internal use for export/migration)
+func (s *SQLiteStorage) readGraphFull() (*KnowledgeGraph, error) {
 	graph := &KnowledgeGraph{
 		Entities:  []Entity{},
 		Relations: []Relation{},
@@ -457,11 +550,11 @@ func (s *SQLiteStorage) ReadGraph() (*KnowledgeGraph, error) {
 	return graph, nil
 }
 
-// SearchNodes searches for nodes containing the query string
-func (s *SQLiteStorage) SearchNodes(query string) (*KnowledgeGraph, error) {
+// SearchNodes searches for nodes containing the query string and returns lightweight summaries
+func (s *SQLiteStorage) SearchNodes(query string, limit int) (*SearchResult, error) {
 	// Try FTS search first if available
 	if s.isFTSAvailable() {
-		result, err := s.SearchNodesWithFTS(query)
+		result, err := s.SearchNodesWithFTS(query, limit)
 		if err == nil {
 			return result, nil
 		}
@@ -470,7 +563,7 @@ func (s *SQLiteStorage) SearchNodes(query string) (*KnowledgeGraph, error) {
 	}
 
 	// Always use basic search as fallback
-	return s.searchNodesBasic(query)
+	return s.searchNodesBasic(query, limit)
 }
 
 // isFTSAvailable checks if FTS5 tables are available
@@ -480,51 +573,92 @@ func (s *SQLiteStorage) isFTSAvailable() bool {
 	return err == nil && count > 0
 }
 
-// searchNodesBasic performs basic LIKE-based search
-func (s *SQLiteStorage) searchNodesBasic(query string) (*KnowledgeGraph, error) {
-	graph := &KnowledgeGraph{
-		Entities:  []Entity{},
-		Relations: []Relation{},
+// searchNodesBasic performs basic LIKE-based search and returns search hits with snippets
+// Multiple space-separated words are treated as OR search
+func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult, error) {
+	result := &SearchResult{
+		Entities: []EntitySearchHit{},
+		Limit:    limit,
 	}
 
 	if query == "" {
-		return graph, nil
+		return result, nil
 	}
 
-	// Search in entity names, types, and observations
-	searchQuery := `
-		SELECT DISTINCT e.id, e.name, e.entity_type
+	// Split query into words for OR search
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		return result, nil
+	}
+
+	// Build dynamic WHERE clause for multi-word OR search
+	var whereClauses []string
+	var args []interface{}
+
+	for _, word := range words {
+		searchPattern := "%" + word + "%"
+		whereClauses = append(whereClauses, "(e.name LIKE ? OR e.entity_type LIKE ? OR o.content LIKE ?)")
+		args = append(args, searchPattern, searchPattern, searchPattern)
+	}
+
+	whereClause := strings.Join(whereClauses, " OR ")
+
+	// First, get total count
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT e.id)
 		FROM entities e
 		LEFT JOIN observations o ON e.id = o.entity_id
-		WHERE e.name LIKE ? 
-		   OR e.entity_type LIKE ?
-		   OR o.content LIKE ?
-		ORDER BY e.created_at
-	`
+		WHERE %s
+	`, whereClause)
 
-	searchPattern := "%" + query + "%"
-	rows, err := s.db.Query(searchQuery, searchPattern, searchPattern, searchPattern)
+	err := s.db.QueryRow(countQuery, args...).Scan(&result.Total)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count search results: %w", err)
+	}
+
+	// Get matched entity IDs (with optional limit)
+	var searchQuery string
+	if limit > 0 {
+		searchQuery = fmt.Sprintf(`
+			SELECT DISTINCT e.id, e.name, e.entity_type
+			FROM entities e
+			LEFT JOIN observations o ON e.id = o.entity_id
+			WHERE %s
+			ORDER BY e.created_at DESC
+			LIMIT ?
+		`, whereClause)
+		args = append(args, limit)
+	} else {
+		// No limit - return all results
+		searchQuery = fmt.Sprintf(`
+			SELECT DISTINCT e.id, e.name, e.entity_type
+			FROM entities e
+			LEFT JOIN observations o ON e.id = o.entity_id
+			WHERE %s
+			ORDER BY e.created_at DESC
+		`, whereClause)
+	}
+
+	rows, err := s.db.Query(searchQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search entities: %w", err)
 	}
 	defer rows.Close()
 
-	entityIDs := []int64{}
-	entityMap := make(map[int64]Entity)
+	var entityIDs []int64
+	entityMap := make(map[int64]*EntitySearchHit)
 
 	for rows.Next() {
 		var id int64
 		var name, entityType string
-
 		if err := rows.Scan(&id, &name, &entityType); err != nil {
 			return nil, fmt.Errorf("failed to scan search result: %w", err)
 		}
-
 		entityIDs = append(entityIDs, id)
-		entityMap[id] = Entity{
-			Name:         name,
-			EntityType:   entityType,
-			Observations: []string{},
+		entityMap[id] = &EntitySearchHit{
+			Name:       name,
+			EntityType: entityType,
+			Snippets:   []string{},
 		}
 	}
 
@@ -532,92 +666,208 @@ func (s *SQLiteStorage) searchNodesBasic(query string) (*KnowledgeGraph, error) 
 		return nil, fmt.Errorf("error iterating search results: %w", err)
 	}
 
-	// Load observations for found entities
+	// Get snippets, observations count, and relations count for each entity
 	if len(entityIDs) > 0 {
+		// Build placeholders for entity IDs
 		placeholders := make([]string, len(entityIDs))
-		args := make([]interface{}, len(entityIDs))
+		idArgs := make([]interface{}, len(entityIDs))
 		for i, id := range entityIDs {
 			placeholders[i] = "?"
-			args[i] = id
+			idArgs[i] = id
 		}
+		placeholderStr := strings.Join(placeholders, ",")
 
-		obsQuery := fmt.Sprintf(`
-			SELECT entity_id, content 
+		// Get observations count for each entity
+		obsCountQuery := fmt.Sprintf(`
+			SELECT entity_id, COUNT(*) 
 			FROM observations 
-			WHERE entity_id IN (%s)
-			ORDER BY id
-		`, strings.Join(placeholders, ","))
-
-		rows, err := s.db.Query(obsQuery, args...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query observations: %w", err)
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var entityID int64
-			var content string
-
-			if err := rows.Scan(&entityID, &content); err != nil {
-				return nil, fmt.Errorf("failed to scan observation: %w", err)
-			}
-
-			if entity, ok := entityMap[entityID]; ok {
-				entity.Observations = append(entity.Observations, content)
-				entityMap[entityID] = entity
+			WHERE entity_id IN (%s) 
+			GROUP BY entity_id
+		`, placeholderStr)
+		obsRows, err := s.db.Query(obsCountQuery, idArgs...)
+		if err == nil {
+			defer obsRows.Close()
+			for obsRows.Next() {
+				var entityID int64
+				var count int
+				if err := obsRows.Scan(&entityID, &count); err == nil {
+					if hit, ok := entityMap[entityID]; ok {
+						hit.ObservationsCount = count
+					}
+				}
 			}
 		}
 
-		if err = rows.Err(); err != nil {
-			return nil, fmt.Errorf("error iterating observations: %w", err)
-		}
-
-		// Convert map to slice
-		for _, entity := range entityMap {
-			graph.Entities = append(graph.Entities, entity)
-		}
-
-		// Load relations for found entities
-		relQuery := fmt.Sprintf(`
-			SELECT f.name, t.name, r.relation_type
-			FROM relations r
-			JOIN entities f ON r.from_entity_id = f.id
-			JOIN entities t ON r.to_entity_id = t.id
-			WHERE r.from_entity_id IN (%s) OR r.to_entity_id IN (%s)
-			ORDER BY r.created_at
-		`, strings.Join(placeholders, ","), strings.Join(placeholders, ","))
-
-		// Duplicate args for both IN clauses
-		relArgs := append(args, args...)
-
-		rows, err = s.db.Query(relQuery, relArgs...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query relations: %w", err)
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var from, to, relType string
-			if err := rows.Scan(&from, &to, &relType); err != nil {
-				return nil, fmt.Errorf("failed to scan relation: %w", err)
+		// Get relations count for each entity
+		relCountQuery := fmt.Sprintf(`
+			SELECT e.id, COUNT(DISTINCT r.id)
+			FROM entities e
+			LEFT JOIN relations r ON e.id = r.from_entity_id OR e.id = r.to_entity_id
+			WHERE e.id IN (%s)
+			GROUP BY e.id
+		`, placeholderStr)
+		relRows, err := s.db.Query(relCountQuery, idArgs...)
+		if err == nil {
+			defer relRows.Close()
+			for relRows.Next() {
+				var entityID int64
+				var count int
+				if err := relRows.Scan(&entityID, &count); err == nil {
+					if hit, ok := entityMap[entityID]; ok {
+						hit.RelationsCount = count
+					}
+				}
 			}
-
-			graph.Relations = append(graph.Relations, Relation{
-				From:         from,
-				To:           to,
-				RelationType: relType,
-			})
 		}
 
-		if err = rows.Err(); err != nil {
-			return nil, fmt.Errorf("error iterating relations: %w", err)
+		// Get snippets - observations that match query with context around keywords
+		// maxSnippets=0 means return all matched snippets when limit=0
+		maxSnippets := 2
+		if limit == 0 {
+			maxSnippets = 0 // unlimited snippets
+		}
+		for _, id := range entityIDs {
+			hit := entityMap[id]
+			snippets := s.getMatchedSnippets(id, words, maxSnippets, 50) // 50 chars context before/after keyword
+			hit.Snippets = snippets
 		}
 	}
 
-	return graph, nil
+	// Build result maintaining order
+	for _, id := range entityIDs {
+		result.Entities = append(result.Entities, *entityMap[id])
+	}
+
+	// HasMore is only true when limit is specified and there are more results
+	if limit > 0 {
+		result.HasMore = result.Total > limit
+	} else {
+		result.HasMore = false // no limit means all results returned
+	}
+
+	return result, nil
 }
 
-// OpenNodes retrieves specific nodes by name
+// getMatchedSnippets returns context snippets around matched keywords
+// contextChars is the number of characters to show before and after the keyword
+func (s *SQLiteStorage) getMatchedSnippets(entityID int64, words []string, maxSnippets int, contextChars int) []string {
+	var snippets []string
+
+	// Build WHERE clause to find matching observations
+	var whereClauses []string
+	var args []interface{}
+	args = append(args, entityID)
+
+	for _, word := range words {
+		whereClauses = append(whereClauses, "content LIKE ?")
+		args = append(args, "%"+word+"%")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT content FROM observations 
+		WHERE entity_id = ? AND (%s)
+	`, strings.Join(whereClauses, " OR "))
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return snippets
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err == nil {
+			// Extract context around matched keyword
+			snippet := extractKeywordContext(content, words, contextChars)
+			snippets = append(snippets, snippet)
+			if maxSnippets > 0 && len(snippets) >= maxSnippets {
+				break
+			}
+		}
+	}
+
+	// If no matched observations, get first 2 observations as fallback
+	if len(snippets) == 0 {
+		fallbackRows, err := s.db.Query(
+			"SELECT content FROM observations WHERE entity_id = ? LIMIT ?",
+			entityID, 2,
+		)
+		if err == nil {
+			defer fallbackRows.Close()
+			for fallbackRows.Next() {
+				var content string
+				if err := fallbackRows.Scan(&content); err == nil {
+					snippets = append(snippets, truncateString(content, contextChars*2))
+				}
+			}
+		}
+	}
+
+	return snippets
+}
+
+// extractKeywordContext extracts a snippet with context around the first matched keyword
+func extractKeywordContext(content string, words []string, contextChars int) string {
+	contentLower := strings.ToLower(content)
+	contentRunes := []rune(content)
+	contentLen := len(contentRunes)
+
+	// Find the first matching keyword position
+	matchPos := -1
+	matchLen := 0
+	for _, word := range words {
+		wordLower := strings.ToLower(word)
+		pos := strings.Index(contentLower, wordLower)
+		if pos != -1 {
+			// Convert byte position to rune position
+			runePos := len([]rune(content[:pos]))
+			if matchPos == -1 || runePos < matchPos {
+				matchPos = runePos
+				matchLen = len([]rune(word))
+			}
+		}
+	}
+
+	// If no match found, return truncated content
+	if matchPos == -1 {
+		return truncateString(content, contextChars*2)
+	}
+
+	// Calculate start and end positions for context
+	start := matchPos - contextChars
+	if start < 0 {
+		start = 0
+	}
+	end := matchPos + matchLen + contextChars
+	if end > contentLen {
+		end = contentLen
+	}
+
+	// Build snippet with ellipsis
+	var result strings.Builder
+	if start > 0 {
+		result.WriteString("...")
+	}
+	result.WriteString(string(contentRunes[start:end]))
+	if end < contentLen {
+		result.WriteString("...")
+	}
+
+	return result.String()
+}
+
+// truncateString truncates a string to maxLen characters and adds "..." if truncated
+func truncateString(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
+// OpenNodes retrieves specific nodes by name with truncation protection
+const maxObservationsPerEntity = 100
+
 func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 	graph := &KnowledgeGraph{
 		Entities:  []Entity{},
@@ -635,14 +885,11 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 		args[i] = name
 	}
 
-	// Load entities with observations
+	// Load entities first (without observations)
 	query := fmt.Sprintf(`
-		SELECT e.id, e.name, e.entity_type, 
-		       GROUP_CONCAT(o.content, '|||') as observations
+		SELECT e.id, e.name, e.entity_type
 		FROM entities e
-		LEFT JOIN observations o ON e.id = o.entity_id
 		WHERE e.name IN (%s)
-		GROUP BY e.id, e.name, e.entity_type
 		ORDER BY e.created_at
 	`, strings.Join(placeholders, ","))
 
@@ -653,34 +900,65 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 	defer rows.Close()
 
 	entityIDs := []int64{}
+	entityMap := make(map[int64]*Entity)
 
 	for rows.Next() {
 		var id int64
 		var name, entityType string
-		var obsStr sql.NullString
 
-		if err := rows.Scan(&id, &name, &entityType, &obsStr); err != nil {
+		if err := rows.Scan(&id, &name, &entityType); err != nil {
 			return nil, fmt.Errorf("failed to scan entity: %w", err)
 		}
 
 		entityIDs = append(entityIDs, id)
-
-		entity := Entity{
+		entityMap[id] = &Entity{
 			Name:         name,
 			EntityType:   entityType,
 			Observations: []string{},
 		}
-
-		if obsStr.Valid && obsStr.String != "" {
-			entity.Observations = strings.Split(obsStr.String, "|||")
-		}
-
-		graph.Entities = append(graph.Entities, entity)
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating entities: %w", err)
 	}
+
+	// Load observations for each entity with truncation
+	truncated := false
+	for _, id := range entityIDs {
+		entity := entityMap[id]
+
+		// Get total count first
+		var totalObs int
+		s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE entity_id = ?", id).Scan(&totalObs)
+
+		// Get observations with limit
+		obsRows, err := s.db.Query(
+			"SELECT content FROM observations WHERE entity_id = ? LIMIT ?",
+			id, maxObservationsPerEntity,
+		)
+		if err != nil {
+			continue
+		}
+
+		for obsRows.Next() {
+			var content string
+			if err := obsRows.Scan(&content); err == nil {
+				entity.Observations = append(entity.Observations, content)
+			}
+		}
+		obsRows.Close()
+
+		if totalObs > maxObservationsPerEntity {
+			truncated = true
+		}
+	}
+
+	// Build entities list maintaining order
+	for _, id := range entityIDs {
+		graph.Entities = append(graph.Entities, *entityMap[id])
+	}
+
+	graph.Truncated = truncated
 
 	// Load relations for found entities
 	if len(entityIDs) > 0 {
@@ -732,7 +1010,7 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 
 // ExportData exports all data for migration
 func (s *SQLiteStorage) ExportData() (*KnowledgeGraph, error) {
-	return s.ReadGraph()
+	return s.readGraphFull()
 }
 
 // ImportData imports data during migration
