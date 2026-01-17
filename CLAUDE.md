@@ -9,19 +9,14 @@ This is a Go implementation of a Memory MCP (Model Context Protocol) server that
 ## Build Commands
 
 ```bash
-# Build for current platform
-go build
+# Build for current platform (recommended)
+make build
 
 # Run tests
-go test -v
+go test ./...
 
-# Build for all platforms
-make all
-
-# Build for specific platforms
-make build-darwin-universal  # macOS Universal Binary
-make build-linux-amd64      # Linux x86_64
-make build-windows-amd64    # Windows x86_64
+# Build for all platforms (cross-compile)
+make build-all
 
 # Clean build artifacts
 make clean
@@ -32,11 +27,46 @@ make dist
 
 ## Development Workflow
 
+### Project Architecture
 1. **Layered Architecture**: Storage abstraction with pluggable backends
 2. **Storage Backends**: SQLite (preferred) and JSONL (legacy)
 3. **Auto-Migration**: Automatic upgrade from JSONL to SQLite
-4. **Version**: Updated to v0.2.0 with SQLite support
+4. **Version**: Managed via `VERSION` file at repo root
 5. Build outputs go to `.build/` directory
+
+### Local Verification Checklist
+
+Before pushing any changes, run this verification sequence:
+
+```bash
+# Complete verification (one-liner)
+make fmt && make check && go test ./... && make build
+
+# Or step by step:
+make fmt          # Format code (auto-fix)
+make vet          # Static analysis
+go mod tidy       # Sync dependencies
+go test ./...     # Run all tests
+make build        # Verify build
+```
+
+### CI Pipeline Mapping
+
+| Local Command | CI Step | Purpose |
+|---------------|---------|---------|
+| `make deps` | Dependencies | Download Go modules |
+| `go mod tidy` | Tidy check | Ensure no uncommitted module changes |
+| `make check` | Lint | Formatting (`gofmt -s`) + `go vet` |
+| `make build` | Build | Compile for current platform |
+
+### Troubleshooting CI Failures
+
+| Failure | Cause | Fix |
+|---------|-------|-----|
+| "files need formatting" | Code not formatted | Run `make fmt` and re-commit |
+| "go.mod/go.sum changed" | Dependencies out of sync | Run `go mod tidy` and commit changes |
+| "go vet" errors | Static analysis issues | Fix reported issues in code |
+| Build failure | Syntax or import errors | Check compiler output, fix errors |
 
 ## Testing
 
