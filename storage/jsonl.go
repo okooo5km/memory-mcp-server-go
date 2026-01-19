@@ -410,8 +410,17 @@ func (j *JSONLStorage) ReadGraph(mode string, limit int) (interface{}, error) {
 	return summary, nil
 }
 
+// Match priority constants for JSONL search ranking (same as SQLite)
+const (
+	jsonlPriorityNameExact   = 100 // Exact name match
+	jsonlPriorityNamePartial = 80  // Partial name match
+	jsonlPriorityType        = 50  // Entity type match
+	jsonlPriorityContent     = 20  // Observations content match
+)
+
 // SearchNodes searches for nodes and returns search hits with context snippets
 // Multiple space-separated words are treated as OR search
+// Results are sorted by match priority: name exact > name partial > type > content
 func (j *JSONLStorage) SearchNodes(query string, limit int) (*SearchResult, error) {
 	fullGraph, err := j.loadGraph()
 	if err != nil {
@@ -453,31 +462,52 @@ func (j *JSONLStorage) SearchNodes(query string, limit int) (*SearchResult, erro
 	}
 
 	// Search entities - match if ANY word matches
+	// Track priority for sorting
 	type matchedEntity struct {
 		entity          Entity
 		matchedSnippets []string
+		priority        int // Match priority for sorting
 	}
 	var matchedEntities []matchedEntity
 
 	for _, entity := range fullGraph.Entities {
 		matched := false
 		var snippets []string
+		priority := 0 // Track the highest priority match
 
 		for _, queryWord := range lowerWords {
-			// Check name
-			if strings.Contains(strings.ToLower(entity.Name), queryWord) {
+			lowerName := strings.ToLower(entity.Name)
+			lowerType := strings.ToLower(entity.EntityType)
+
+			// Check name - exact match (highest priority)
+			if lowerName == queryWord {
 				matched = true
+				if jsonlPriorityNameExact > priority {
+					priority = jsonlPriorityNameExact
+				}
+			} else if strings.Contains(lowerName, queryWord) {
+				// Check name - partial match
+				matched = true
+				if jsonlPriorityNamePartial > priority {
+					priority = jsonlPriorityNamePartial
+				}
 			}
 
 			// Check type
-			if strings.Contains(strings.ToLower(entity.EntityType), queryWord) {
+			if strings.Contains(lowerType, queryWord) {
 				matched = true
+				if jsonlPriorityType > priority {
+					priority = jsonlPriorityType
+				}
 			}
 
 			// Check observations and collect context snippets around keywords
 			for _, obs := range entity.Observations {
 				if strings.Contains(strings.ToLower(obs), queryWord) {
 					matched = true
+					if jsonlPriorityContent > priority {
+						priority = jsonlPriorityContent
+					}
 					// Add context snippet if within limit
 					if maxSnippets == 0 || len(snippets) < maxSnippets {
 						snippets = append(snippets, extractKeywordContextJSON(obs, words, 50))
@@ -500,9 +530,18 @@ func (j *JSONLStorage) SearchNodes(query string, limit int) (*SearchResult, erro
 			matchedEntities = append(matchedEntities, matchedEntity{
 				entity:          entity,
 				matchedSnippets: snippets,
+				priority:        priority,
 			})
 		}
 	}
+
+	// Sort by priority (descending), then by name (ascending) for stable ordering
+	slices.SortFunc(matchedEntities, func(a, b matchedEntity) int {
+		if a.priority != b.priority {
+			return b.priority - a.priority // Higher priority first
+		}
+		return strings.Compare(a.entity.Name, b.entity.Name) // Alphabetical
+	})
 
 	result.Total = len(matchedEntities)
 

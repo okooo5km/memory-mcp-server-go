@@ -110,6 +110,7 @@ func (s *SQLiteStorage) rebuildFTSIndex() error {
 }
 
 // SearchNodesWithFTS searches using FTS5 and returns search hits with snippets
+// Results are sorted by match location priority: name/type matches before content matches
 func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResult, error) {
 	result := &SearchResult{
 		Entities: []EntitySearchHit{},
@@ -125,16 +126,19 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 	words := strings.Fields(query)
 
 	// Use a map to track unique entities (by ID to avoid duplicates)
+	// Track match source: entity FTS (name/type) has higher priority than observation FTS
 	type entityInfo struct {
-		ID         int64
-		Name       string
-		EntityType string
-		Rank       float64
+		ID            int64
+		Name          string
+		EntityType    string
+		Rank          float64
+		MatchedInName bool // true if matched in entities_fts (name/type)
 	}
 	entityMap := make(map[int64]*entityInfo)
-	var orderedIDs []int64
+	var nameMatchIDs []int64    // IDs matched in name/type (higher priority)
+	var contentMatchIDs []int64 // IDs matched only in observations (lower priority)
 
-	// Search entities using FTS
+	// Search entities using FTS (matches in name or entity_type)
 	entityQuery := `
 		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(ef) as rank
 		FROM entities_fts ef
@@ -161,16 +165,17 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 
 		if _, exists := entityMap[id]; !exists {
 			entityMap[id] = &entityInfo{
-				ID:         id,
-				Name:       name,
-				EntityType: entityType,
-				Rank:       rank,
+				ID:            id,
+				Name:          name,
+				EntityType:    entityType,
+				Rank:          rank,
+				MatchedInName: true, // Matched in entities_fts
 			}
-			orderedIDs = append(orderedIDs, id)
+			nameMatchIDs = append(nameMatchIDs, id)
 		}
 	}
 
-	// Search observations using FTS
+	// Search observations using FTS (matches in observation content)
 	obsQuery := `
 		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(of) as rank
 		FROM observations_fts of
@@ -193,21 +198,26 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 				continue
 			}
 
-			// Add to results if not already found
+			// Add to results if not already found from entity search
 			if _, exists := entityMap[id]; !exists {
 				entityMap[id] = &entityInfo{
-					ID:         id,
-					Name:       name,
-					EntityType: entityType,
-					Rank:       rank,
+					ID:            id,
+					Name:          name,
+					EntityType:    entityType,
+					Rank:          rank,
+					MatchedInName: false, // Only matched in observations
 				}
-				orderedIDs = append(orderedIDs, id)
+				contentMatchIDs = append(contentMatchIDs, id)
 			}
 		}
 	}
 
 	// Calculate total
 	result.Total = len(entityMap)
+
+	// Combine IDs with name matches first, then content matches
+	// This ensures entities matched by name/type appear before those matched only by content
+	orderedIDs := append(nameMatchIDs, contentMatchIDs...)
 
 	// Apply limit to ordered IDs (only if limit > 0)
 	limitedIDs := orderedIDs

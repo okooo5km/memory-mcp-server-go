@@ -573,8 +573,18 @@ func (s *SQLiteStorage) isFTSAvailable() bool {
 	return err == nil && count > 0
 }
 
+// Match priority constants for search ranking
+// Higher values indicate higher priority
+const (
+	PriorityNameExact   = 100 // Exact name match
+	PriorityNamePartial = 80  // Partial name match
+	PriorityType        = 50  // Entity type match
+	PriorityContent     = 20  // Observations content match
+)
+
 // searchNodesBasic performs basic LIKE-based search and returns search hits with snippets
 // Multiple space-separated words are treated as OR search
+// Results are sorted by match priority: name exact > name partial > type > content
 func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult, error) {
 	result := &SearchResult{
 		Entities: []EntitySearchHit{},
@@ -593,12 +603,12 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 
 	// Build dynamic WHERE clause for multi-word OR search
 	var whereClauses []string
-	var args []interface{}
+	var countArgs []interface{}
 
 	for _, word := range words {
 		searchPattern := "%" + word + "%"
 		whereClauses = append(whereClauses, "(e.name LIKE ? OR e.entity_type LIKE ? OR o.content LIKE ?)")
-		args = append(args, searchPattern, searchPattern, searchPattern)
+		countArgs = append(countArgs, searchPattern, searchPattern, searchPattern)
 	}
 
 	whereClause := strings.Join(whereClauses, " OR ")
@@ -611,35 +621,66 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 		WHERE %s
 	`, whereClause)
 
-	err := s.db.QueryRow(countQuery, args...).Scan(&result.Total)
+	err := s.db.QueryRow(countQuery, countArgs...).Scan(&result.Total)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count search results: %w", err)
 	}
 
-	// Get matched entity IDs (with optional limit)
+	// Build priority CASE expression for each search word
+	// Priority: name exact match > name partial > type match > content match
+	var priorityCases []string
+	var searchArgs []interface{}
+
+	for _, word := range words {
+		exactPattern := word
+		partialPattern := "%" + word + "%"
+		// CASE expression to calculate priority for each word
+		priorityCases = append(priorityCases, fmt.Sprintf(`
+			CASE
+				WHEN e.name = ? COLLATE NOCASE THEN %d
+				WHEN e.name LIKE ? COLLATE NOCASE THEN %d
+				WHEN e.entity_type LIKE ? COLLATE NOCASE THEN %d
+				ELSE %d
+			END
+		`, PriorityNameExact, PriorityNamePartial, PriorityType, PriorityContent))
+		searchArgs = append(searchArgs, exactPattern, partialPattern, partialPattern)
+	}
+
+	// Use MAX to get the highest priority among all matched words
+	priorityExpr := fmt.Sprintf("MAX(%s)", strings.Join(priorityCases, ", "))
+
+	// Add WHERE clause args
+	for _, word := range words {
+		searchPattern := "%" + word + "%"
+		searchArgs = append(searchArgs, searchPattern, searchPattern, searchPattern)
+	}
+
+	// Get matched entity IDs with priority sorting
 	var searchQuery string
 	if limit > 0 {
 		searchQuery = fmt.Sprintf(`
-			SELECT DISTINCT e.id, e.name, e.entity_type
+			SELECT e.id, e.name, e.entity_type, %s AS priority
 			FROM entities e
 			LEFT JOIN observations o ON e.id = o.entity_id
 			WHERE %s
-			ORDER BY e.created_at DESC
+			GROUP BY e.id, e.name, e.entity_type
+			ORDER BY priority DESC, e.created_at DESC
 			LIMIT ?
-		`, whereClause)
-		args = append(args, limit)
+		`, priorityExpr, whereClause)
+		searchArgs = append(searchArgs, limit)
 	} else {
 		// No limit - return all results
 		searchQuery = fmt.Sprintf(`
-			SELECT DISTINCT e.id, e.name, e.entity_type
+			SELECT e.id, e.name, e.entity_type, %s AS priority
 			FROM entities e
 			LEFT JOIN observations o ON e.id = o.entity_id
 			WHERE %s
-			ORDER BY e.created_at DESC
-		`, whereClause)
+			GROUP BY e.id, e.name, e.entity_type
+			ORDER BY priority DESC, e.created_at DESC
+		`, priorityExpr, whereClause)
 	}
 
-	rows, err := s.db.Query(searchQuery, args...)
+	rows, err := s.db.Query(searchQuery, searchArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search entities: %w", err)
 	}
@@ -651,7 +692,8 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 	for rows.Next() {
 		var id int64
 		var name, entityType string
-		if err := rows.Scan(&id, &name, &entityType); err != nil {
+		var priority int
+		if err := rows.Scan(&id, &name, &entityType, &priority); err != nil {
 			return nil, fmt.Errorf("failed to scan search result: %w", err)
 		}
 		entityIDs = append(entityIDs, id)

@@ -37,6 +37,8 @@ make dist
 
 ### Local Verification Checklist
 
+**IMPORTANT**: After completing any code changes, you MUST run the verification sequence before finishing. This ensures CI will pass when pushed to GitHub.
+
 Before pushing any changes, run this verification sequence:
 
 ```bash
@@ -71,11 +73,11 @@ make build        # Verify build
 
 ## Testing
 
-Tests are available in `storage_test.go`:
+Tests are available in `storage/search_priority_test.go`:
 
+- Search priority tests (name > type > content match ranking)
 - Storage interface compatibility tests
-- Migration functionality tests
-- Run with `go test -v`
+- Run with `go test -v ./...`
 
 ## Architecture
 
@@ -185,6 +187,11 @@ Tests are available in `storage_test.go`:
    - FTS5 full-text search with BM25 ranking
    - Automatic fallback to LIKE-based search
    - Search suggestions and analytics
+   - **Name Priority Ranking**: Results sorted by match location
+     - Name exact match (priority: 100)
+     - Name partial match (priority: 80)
+     - Entity type match (priority: 50)
+     - Observations content match (priority: 20)
 
 3. **Database Schema**:
    - Proper indexing on frequently queried columns
