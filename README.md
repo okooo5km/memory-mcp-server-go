@@ -76,6 +76,16 @@ Options:
 - Specific version: `curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash -s -- -v v0.2.3`
 - Custom install dir: `... | bash -s -- -d /usr/local/bin`
 
+**Update:**
+
+```bash
+# Update to latest version (same command as install)
+curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash
+
+# Check current version
+memory-mcp-server-go --version
+```
+
 Note: Windows users, please see the Windows section below.
 
 ### Option 2: Download Pre-built Binary
