@@ -126,17 +126,17 @@ Tests are available in `storage/search_priority_test.go`:
 ### Command-line Arguments
 
 ```bash
-./memory-mcp-server-go [options]
+./mms [options]
   -t, --transport string     Transport type: stdio or sse (default "stdio")
   -m, --memory string        Memory file path
   -p, --port int            Port for SSE transport (default 8080)
   -v, --version             Show version
   -h, --help               Show help
-  
+
   # Storage options
   --storage string          Storage type: sqlite or jsonl (auto-detected)
   --auto-migrate           Automatically migrate from JSONL to SQLite (default true)
-  
+
   # Migration commands
   --migrate string         Migrate data from JSONL file to SQLite
   --migrate-to string      Destination SQLite file for migration
@@ -167,13 +167,13 @@ Tests are available in `storage/search_priority_test.go`:
 
 ```bash
 # Migrate specific file
-./memory-mcp-server-go --migrate=old_data.json --migrate-to=new_data.db
+./mms --migrate=old_data.json --migrate-to=new_data.db
 
 # Dry run to check migration
-./memory-mcp-server-go --migrate=old_data.json --dry-run
+./mms --migrate=old_data.json --dry-run
 
 # Force overwrite existing destination
-./memory-mcp-server-go --migrate=old_data.json --force
+./mms --migrate=old_data.json --force
 ```
 
 ## Performance Optimizations
@@ -197,6 +197,14 @@ Tests are available in `storage/search_priority_test.go`:
    - Proper indexing on frequently queried columns
    - Foreign key constraints for data integrity
    - Optimized queries with prepared statements
+
+## Release & Distribution
+
+- **Binary name**: `mms` (short for Memory MCP Server)
+- **GoReleaser**: `.goreleaser.yaml` handles cross-compilation, archive creation, changelog, and Homebrew formula
+- **Homebrew**: `brew install okooo5km/tap/mms` — formula auto-published to `okooo5km/homebrew-tap` via GoReleaser
+- **Release workflow**: Push a `v*` tag to trigger `.github/workflows/release.yml` (GoReleaser-based)
+- **Install script**: `scripts/install.sh` downloads GoReleaser archives (`mms_VERSION_os_arch.tar.gz`)
 
 ## Important Notes
 

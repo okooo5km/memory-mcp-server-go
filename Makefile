@@ -1,6 +1,6 @@
 ## Go build Makefile (standardized)
 
-APP_NAME ?= memory-mcp-server-go
+APP_NAME ?= mms
 BUILD_DIR ?= .build
 # Single source of truth for version (no git required)
 VERSION_FILE ?= VERSION

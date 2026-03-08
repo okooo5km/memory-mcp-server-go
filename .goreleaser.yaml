@@ -1,0 +1,102 @@
+# GoReleaser configuration for mms (Memory MCP Server)
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: mms
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: mms
+    binary: mms
+    main: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: mms
+    ids:
+      - mms
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge"
+  groups:
+    - title: "✨ Features"
+      regexp: '^feat(\(.+\))?:'
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: '^fix(\(.+\))?:'
+      order: 1
+    - title: "⚡ Performance"
+      regexp: '^perf(\(.+\))?:'
+      order: 2
+    - title: "♻️ Refactor"
+      regexp: '^refactor(\(.+\))?:'
+      order: 3
+    - title: "📝 Documentation"
+      regexp: '^docs?(\(.+\))?:'
+      order: 4
+    - title: "🧪 Tests"
+      regexp: '^tests?(\(.+\))?:'
+      order: 5
+    - title: "🛠 Build/CI"
+      regexp: '^(build|ci)(\(.+\))?:'
+      order: 6
+    - title: "🔧 Chore"
+      regexp: '^chore(\(.+\))?:'
+      order: 7
+    - title: "Others"
+      order: 999
+
+brews:
+  - name: mms
+    repository:
+      owner: okooo5km
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    commit_author:
+      name: okooo5km
+      email: okooo5km@gmail.com
+    directory: Formula
+    homepage: "https://github.com/okooo5km/memory-mcp-server-go"
+    description: "A high-performance Go implementation of a knowledge graph memory server for MCP"
+    license: MIT
+    test: |
+      system "#{bin}/mms", "--version"
+    install: |
+      bin.install "mms"
+
+release:
+  name_template: "v{{ .Version }}"
+  header: |
+    ## Memory MCP Server (mms) v{{ .Version }}
+  footer: |
+    **Full Changelog**: https://github.com/okooo5km/memory-mcp-server-go/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    ---
+    Install via Homebrew: `brew install okooo5km/tap/mms`

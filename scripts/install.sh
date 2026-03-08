@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="memory-mcp-server-go"
+APP_NAME="mms"
 REPO="okooo5km/memory-mcp-server-go"
 
 VERSION="latest"
@@ -48,8 +48,8 @@ uname_s=$(uname -s | tr '[:upper:]' '[:lower:]')
 uname_m=$(uname -m | tr '[:upper:]' '[:lower:]')
 
 case "$uname_s" in
-  linux)   os="linux" ; ext=".tgz" ; ;;
-  darwin)  os="darwin"; ext=".tgz" ; ;;
+  linux)   os="linux" ; ext=".tar.gz" ; ;;
+  darwin)  os="darwin"; ext=".tar.gz" ; ;;
   msys*|mingw*|cygwin*)
     err "Windows shell installation is not supported. Please download the .zip from Releases and extract manually."
     exit 1
@@ -63,15 +63,23 @@ case "$uname_m" in
   *) err "Unsupported architecture: $uname_m"; exit 1;;
 esac
 
-asset_name="${APP_NAME}-${os}-${arch}${ext}"
-
+# Resolve version
 if [ "$VERSION" = "latest" ]; then
-  url="https://github.com/${REPO}/releases/latest/download/${asset_name}"
-else
-  # ensure version has leading v
-  case "$VERSION" in v*) ;; *) VERSION="v${VERSION}";; esac
-  url="https://github.com/${REPO}/releases/download/${VERSION}/${asset_name}"
+  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+  if [ -z "$VERSION" ]; then
+    err "Failed to fetch latest version from GitHub API"
+    exit 1
+  fi
+  log "Latest version: ${VERSION}"
 fi
+
+# Ensure version has leading v
+case "$VERSION" in v*) ;; *) VERSION="v${VERSION}";; esac
+
+# GoReleaser archive naming: mms_VERSION_os_arch.tar.gz
+version_no_v="${VERSION#v}"
+asset_name="${APP_NAME}_${version_no_v}_${os}_${arch}${ext}"
+url="https://github.com/${REPO}/releases/download/${VERSION}/${asset_name}"
 
 tmpdir=$(mktemp -d)
 cleanup() { rm -rf "$tmpdir"; }
@@ -85,14 +93,8 @@ curl -fL ${QUIET:+-sS} -o "$archive_path" "$url"
 log "Extracting..."
 tar -xzf "$archive_path" -C "$tmpdir"
 
-# Determine extracted binary name (should be APP_NAME-os-arch)
-bin_name="${APP_NAME}-${os}-${arch}"
-if [ ! -f "${tmpdir}/${bin_name}" ]; then
-  # Fallback to first entry in archive
-  bin_name=$(tar -tzf "$archive_path" | head -1)
-fi
-
-src_bin="${tmpdir}/${bin_name}"
+# GoReleaser extracts binary as APP_NAME directly
+src_bin="${tmpdir}/${APP_NAME}"
 if [ ! -f "$src_bin" ]; then
   err "Extracted binary not found: $src_bin"
   exit 1
@@ -105,16 +107,15 @@ if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
   xattr -p com.apple.quarantine "$src_bin" >/dev/null 2>&1 && xattr -d com.apple.quarantine "$src_bin" || true
 fi
 
-install_name="${APP_NAME}"
 mkdir -p "$DEST_DIR"
 
-log "Installing to ${DEST_DIR}/${install_name}"
-mv "$src_bin" "${DEST_DIR}/${install_name}"
+log "Installing to ${DEST_DIR}/${APP_NAME}"
+mv "$src_bin" "${DEST_DIR}/${APP_NAME}"
 
-if ! command -v "$DEST_DIR/${install_name}" >/dev/null 2>&1; then
+if ! command -v "$DEST_DIR/${APP_NAME}" >/dev/null 2>&1; then
   log "Installed. Ensure ${DEST_DIR} is in your PATH."
 else
-  log "Installed: $("${DEST_DIR}/${install_name}" --version 2>/dev/null || echo ${DEST_DIR}/${install_name})"
+  log "Installed: $("${DEST_DIR}/${APP_NAME}" --version 2>/dev/null || echo ${DEST_DIR}/${APP_NAME})"
 fi
 
 log "Done."

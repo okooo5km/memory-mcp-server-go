@@ -63,7 +63,13 @@
 
 ## Installation
 
-### Option 1: Quick Install (macOS/Linux)
+### Option 1: Homebrew (macOS/Linux)
+
+```bash
+brew install okooo5km/tap/mms
+```
+
+### Option 2: Quick Install (macOS/Linux)
 
 Install the latest version with a single command:
 
@@ -79,20 +85,21 @@ Options:
 **Update:**
 
 ```bash
-# Update to latest version (same command as install)
+# Homebrew
+brew upgrade mms
+
+# Or reinstall via script
 curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash
 
 # Check current version
-memory-mcp-server-go --version
+mms --version
 ```
 
 Note: Windows users, please see the Windows section below.
 
-### Option 2: Download Pre-built Binary
+### Option 3: Download Pre-built Binary
 
-Download the latest pre-built binary for your platform from the [GitHub Releases](https://github.com/okooo5km/memory-mcp-server-go/releases/latest) page:
-
-Download the binary for your platform from the [GitHub Releases](https://github.com/okooo5km/memory-mcp-server-go/releases/latest) page and follow the installation instructions below.
+Download the latest pre-built binary for your platform from the [GitHub Releases](https://github.com/okooo5km/memory-mcp-server-go/releases/latest) page.
 
 <details>
 <summary><b>macOS Installation</b></summary>
@@ -100,41 +107,36 @@ Download the binary for your platform from the [GitHub Releases](https://github.
 #### macOS with Apple Silicon
 
 ```bash
-# Download the arm64 build (.tgz)
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-darwin-arm64.tgz -o memory-mcp-server.tgz
-tar -xzf memory-mcp-server.tgz
-# Extracted binary is platform-named (e.g., memory-mcp-server-go-darwin-arm64)
-BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
-chmod +x "$BIN"
+# Download the arm64 build
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_darwin_arm64.tar.gz -o mms.tar.gz
+tar -xzf mms.tar.gz
+chmod +x mms
 
 # Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine "$BIN" || true
+xattr -d com.apple.quarantine mms || true
 
-# Install to your local bin directory with a unified name
+# Install to your local bin directory
 mkdir -p ~/.local/bin
-mv "$BIN" ~/.local/bin/memory-mcp-server-go
-rm memory-mcp-server.tgz
+mv mms ~/.local/bin/mms
+rm mms.tar.gz
 ```
 
 #### macOS with Intel Processor
 
 ```bash
-# Download the x86_64 build (.tgz)
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-darwin-amd64.tgz -o memory-mcp-server.tgz
-tar -xzf memory-mcp-server.tgz
-BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
-chmod +x "$BIN"
+# Download the x86_64 build
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_darwin_amd64.tar.gz -o mms.tar.gz
+tar -xzf mms.tar.gz
+chmod +x mms
 
 # Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine "$BIN" || true
+xattr -d com.apple.quarantine mms || true
 
-# Install to your local bin directory with a unified name
+# Install to your local bin directory
 mkdir -p ~/.local/bin
-mv "$BIN" ~/.local/bin/memory-mcp-server-go
-rm memory-mcp-server.tgz
+mv mms ~/.local/bin/mms
+rm mms.tar.gz
 ```
-
-<!-- Universal binary is not provided in current releases. -->
 
 </details>
 
@@ -144,31 +146,29 @@ rm memory-mcp-server.tgz
 #### Linux on x86_64 (most common)
 
 ```bash
-# Download the amd64 build (.tgz)
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-amd64.tgz -o memory-mcp-server.tgz
-tar -xzf memory-mcp-server.tgz
-BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
-chmod +x "$BIN"
+# Download the amd64 build
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_linux_amd64.tar.gz -o mms.tar.gz
+tar -xzf mms.tar.gz
+chmod +x mms
 
-# Install to your local bin directory with a unified name
+# Install to your local bin directory
 mkdir -p ~/.local/bin
-mv "$BIN" ~/.local/bin/memory-mcp-server-go
-rm memory-mcp-server.tgz
+mv mms ~/.local/bin/mms
+rm mms.tar.gz
 ```
 
 #### Linux on ARM64 (e.g., Raspberry Pi 4, AWS Graviton)
 
 ```bash
-# Download the arm64 build (.tgz)
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-linux-arm64.tgz -o memory-mcp-server.tgz
-tar -xzf memory-mcp-server.tgz
-BIN=$(tar -tzf memory-mcp-server.tgz | head -1)
-chmod +x "$BIN"
+# Download the arm64 build
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_linux_arm64.tar.gz -o mms.tar.gz
+tar -xzf mms.tar.gz
+chmod +x mms
 
-# Install to your local bin directory with a unified name
+# Install to your local bin directory
 mkdir -p ~/.local/bin
-mv "$BIN" ~/.local/bin/memory-mcp-server-go
-rm memory-mcp-server.tgz
+mv mms ~/.local/bin/mms
+rm mms.tar.gz
 ```
 
 </details>
@@ -178,15 +178,15 @@ rm memory-mcp-server.tgz
 
 #### Windows on x86_64 (most common)
 
-* Download the [Windows AMD64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-windows-amd64.zip)
+* Download the [Windows AMD64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_windows_amd64.zip)
 * Extract the ZIP file
-* Move the `memory-mcp-server-go.exe` to a location in your PATH
+* Move `mms.exe` to a location in your PATH
 
 #### Windows on ARM64 (e.g., Windows on ARM devices)
 
-* Download the [Windows ARM64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/memory-mcp-server-go-windows-arm64.zip)
+* Download the [Windows ARM64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_windows_arm64.zip)
 * Extract the ZIP file
-* Move the `memory-mcp-server-go.exe` to a location in your PATH
+* Move `mms.exe` to a location in your PATH
 
 </details>
 
@@ -195,15 +195,15 @@ Make sure the installation directory is in your PATH:
 * **macOS/Linux**: Add `export PATH="$HOME/.local/bin:$PATH"` to your shell configuration file (`.bashrc`, `.zshrc`, etc.)
 * **Windows**: Add the directory to your system PATH through the System Properties > Environment Variables dialog
 
-Optionally verify checksums (recommended): releases include `SHA256SUMS.txt`.
+Optionally verify checksums (recommended): releases include `checksums.txt`.
 
 ```bash
 # macOS/Linux example
 cd ~/.local/bin/..  # where you downloaded the artifact
-shasum -a 256 -c SHA256SUMS.txt | grep memory-mcp-server-go || true
+shasum -a 256 -c checksums.txt | grep mms || true
 ```
 
-### Option 3: Build from Source
+### Option 4: Build from Source
 
 1. Clone the repository:
 
@@ -219,10 +219,10 @@ shasum -a 256 -c SHA256SUMS.txt | grep memory-mcp-server-go || true
    ```bash
    # Build for your current platform
    make build
-   
+
    # Build for all platforms at once (pure Go SQLite, no CGO)
    make build-all
-   
+
    # Create distribution packages for all platforms
    make dist
    ```
@@ -232,7 +232,7 @@ shasum -a 256 -c SHA256SUMS.txt | grep memory-mcp-server-go || true
    **Using Go directly:**
 
    ```bash
-   go build
+   go build -o mms
    ```
 
 3. Install the binary:
@@ -240,7 +240,7 @@ shasum -a 256 -c SHA256SUMS.txt | grep memory-mcp-server-go || true
    ```bash
    # Install to user directory (recommended, no sudo required)
    mkdir -p ~/.local/bin
-   cp memory-mcp-server-go ~/.local/bin/
+   cp .build/mms ~/.local/bin/
    ```
 
    Make sure `~/.local/bin` is in your PATH by adding to your shell configuration file:
@@ -274,25 +274,25 @@ Example usage:
 
 ```bash
 # Use default settings (stdio transport, auto-detect storage)
-memory-mcp-server-go
+mms
 
 # Specify a custom memory file location (auto-migration enabled)
-memory-mcp-server-go --memory /path/to/your/memory.json
+mms --memory /path/to/your/memory.json
 
 # Force SQLite storage (skips auto-detection)
-memory-mcp-server-go --storage sqlite --memory /path/to/your/data.db
+mms --storage sqlite --memory /path/to/your/data.db
 
 # Manually migrate JSONL to SQLite
-memory-mcp-server-go --migrate /path/to/memory.json --migrate-to /path/to/memory.db
+mms --migrate /path/to/memory.json --migrate-to /path/to/memory.db
 
 # Use SSE transport on a specific port
-memory-mcp-server-go --transport sse --port 9000
+mms --transport sse --port 9000
 
 # Streamable HTTP transport with custom endpoint and heartbeat
-memory-mcp-server-go --transport http --port 8080 --http-endpoint /mcp --http-heartbeat 45s
+mms --transport http --port 8080 --http-endpoint /mcp --http-heartbeat 45s
 
 # Enable Bearer authentication (applies to SSE/HTTP)
-memory-mcp-server-go --transport http --port 8080 --http-endpoint /mcp --auth-bearer mytoken
+mms --transport http --port 8080 --http-endpoint /mcp --auth-bearer mytoken
 ```
 
 ## Streamable HTTP Usage (cURL examples)
@@ -437,7 +437,7 @@ Add to your Claude settings:
 ```json
 "mcpServers": {
   "memory": {
-    "command": "memory-mcp-server-go",
+    "command": "mms",
     "env": {
       "MEMORY_FILE_PATH": "/Path/Of/Your/memory.json"
     }
@@ -453,7 +453,7 @@ Add the following configuration to your Cursor editor's Settings - mcp.json:
 {
   "mcpServers": {
     "memory": {
-      "command": "memory-mcp-server-go",
+      "command": "mms",
       "env": {
         "MEMORY_FILE_PATH": "/Path/Of/Your/memory.json"
       }
@@ -495,6 +495,7 @@ Always prioritize information from your memory when responding to the user, espe
 - Override methods (without editing the file):
   - Make: `make build VERSION=1.2.3`
   - Go: `go build -ldflags "-X main.version=1.2.3"`
+  - GoReleaser: Automatically injects version from git tag
 
 ## Knowledge Graph Structure
 
@@ -610,7 +611,7 @@ If you're currently using the JSONL format, the server will automatically migrat
 
    ```bash
    # Your existing command continues to work
-   memory-mcp-server-go --memory /path/to/your/memory.json
+   mms --memory /path/to/your/memory.json
    # Server detects JSONL, migrates to memory.db automatically
    ```
 
@@ -618,20 +619,20 @@ If you're currently using the JSONL format, the server will automatically migrat
 
    ```bash
    # Migrate specific files
-   memory-mcp-server-go --migrate /path/to/memory.json --migrate-to /path/to/memory.db
-   
+   mms --migrate /path/to/memory.json --migrate-to /path/to/memory.db
+
    # Dry run to see what will be migrated
-   memory-mcp-server-go --migrate /path/to/memory.json --dry-run
+   mms --migrate /path/to/memory.json --dry-run
    ```
 
 3. **Force Storage Type**
 
    ```bash
    # Skip auto-detection, use SQLite directly
-   memory-mcp-server-go --storage sqlite --memory /path/to/memory.db
-   
+   mms --storage sqlite --memory /path/to/memory.db
+
    # Continue using JSONL (not recommended for large datasets)
-   memory-mcp-server-go --storage jsonl --memory /path/to/memory.json
+   mms --storage jsonl --memory /path/to/memory.json
    ```
 
 ## About
