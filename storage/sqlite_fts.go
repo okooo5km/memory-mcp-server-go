@@ -121,9 +121,12 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 		return result, nil
 	}
 
-	// Prepare FTS query (escape special characters and add quotes for phrase search)
-	ftsQuery := prepareFTSQuery(query)
+	// Expand query with synonyms
 	words := strings.Fields(query)
+	expandedWords := s.expandQueryWithSynonyms(words)
+
+	// Prepare FTS query using expanded words
+	ftsQuery := prepareFTSQuery(strings.Join(expandedWords, " "))
 
 	// Use a map to track unique entities (by ID to avoid duplicates)
 	// Track match source: entity FTS (name/type) has higher priority than observation FTS
@@ -147,7 +150,7 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 		ORDER BY rank
 	`
 
-	entityRows, err := s.db.Query(entityQuery, ftsQuery)
+	entityRows, err := s.rdb().Query(entityQuery, ftsQuery)
 	if err != nil {
 		// Return error to allow fallback to basic search
 		return nil, fmt.Errorf("FTS entity search failed: %w", err)
@@ -185,7 +188,7 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 		ORDER BY rank
 	`
 
-	obsRows, err := s.db.Query(obsQuery, ftsQuery)
+	obsRows, err := s.rdb().Query(obsQuery, ftsQuery)
 	if err == nil {
 		defer obsRows.Close()
 
@@ -214,6 +217,10 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 
 	// Calculate total
 	result.Total = len(entityMap)
+
+	// Reorder within each group by recency (recently accessed entities first)
+	nameMatchIDs = s.reorderByRecency(nameMatchIDs)
+	contentMatchIDs = s.reorderByRecency(contentMatchIDs)
 
 	// Combine IDs with name matches first, then content matches
 	// This ensures entities matched by name/type appear before those matched only by content
@@ -244,7 +251,7 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			WHERE entity_id IN (%s) 
 			GROUP BY entity_id
 		`, placeholderStr)
-		obsCountRows, err := s.db.Query(obsCountQuery, idArgs...)
+		obsCountRows, err := s.rdb().Query(obsCountQuery, idArgs...)
 		if err == nil {
 			defer obsCountRows.Close()
 			for obsCountRows.Next() {
@@ -265,7 +272,7 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			WHERE e.id IN (%s)
 			GROUP BY e.id
 		`, placeholderStr)
-		relCountRows, err := s.db.Query(relCountQuery, idArgs...)
+		relCountRows, err := s.rdb().Query(relCountQuery, idArgs...)
 		if err == nil {
 			defer relCountRows.Close()
 			for relCountRows.Next() {
@@ -295,6 +302,19 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			result.Entities = append(result.Entities, hit)
 		}
 	}
+
+	// Update access stats for matched entities
+	s.updateAccessStats(limitedIDs)
+
+	// Build entitySearchHitMap for graph traversal
+	hitMap := make(map[int64]*EntitySearchHit)
+	for _, id := range limitedIDs {
+		info := entityMap[id]
+		hitMap[id] = &EntitySearchHit{Name: info.Name, EntityType: info.EntityType}
+	}
+
+	// Graph traversal: find 1-hop related entities
+	result.RelatedEntities = s.findRelatedEntities(limitedIDs, hitMap)
 
 	// HasMore is only true when limit is specified and there are more results
 	if limit > 0 {
@@ -332,6 +352,83 @@ func prepareFTSQuery(query string) string {
 	return strings.Join(parts, " OR ")
 }
 
+// expandQueryWithSynonyms expands query words using the synonyms table.
+// For each word, it checks if a synonym exists and adds the expanded term.
+// Returns expanded words (original + synonyms).
+func (s *SQLiteStorage) expandQueryWithSynonyms(words []string) []string {
+	expanded := make([]string, 0, len(words)*2)
+	seen := make(map[string]bool)
+
+	for _, word := range words {
+		wordLower := strings.ToLower(word)
+		if !seen[wordLower] {
+			expanded = append(expanded, word)
+			seen[wordLower] = true
+		}
+
+		// Look up synonym (term -> expanded)
+		var expandedTerm string
+		err := s.rdb().QueryRow("SELECT expanded FROM synonyms WHERE term = ?", wordLower).Scan(&expandedTerm)
+		if err == nil && !seen[strings.ToLower(expandedTerm)] {
+			expanded = append(expanded, expandedTerm)
+			seen[strings.ToLower(expandedTerm)] = true
+		}
+
+		// Reverse lookup (expanded -> term)
+		rows, err := s.rdb().Query("SELECT term FROM synonyms WHERE expanded = ?", wordLower)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var term string
+				if rows.Scan(&term) == nil && !seen[strings.ToLower(term)] {
+					expanded = append(expanded, term)
+					seen[strings.ToLower(term)] = true
+				}
+			}
+		}
+	}
+
+	return expanded
+}
+
+// findEntitiesBySubstring finds entity IDs matching a substring query in names.
+// Used to supplement FTS/LIKE search with direct name matching.
+func (s *SQLiteStorage) findEntitiesBySubstring(words []string, excludeIDs map[int64]bool, limit int) []int64 {
+	if len(words) == 0 {
+		return nil
+	}
+
+	var whereClauses []string
+	var args []interface{}
+	for _, word := range words {
+		whereClauses = append(whereClauses, "LOWER(name) LIKE ?")
+		args = append(args, "%"+strings.ToLower(word)+"%")
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id FROM entities
+		WHERE %s
+		ORDER BY length(name)
+		LIMIT ?
+	`, strings.Join(whereClauses, " OR "))
+	args = append(args, limit)
+
+	rows, err := s.rdb().Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil && !excludeIDs[id] {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // GetSearchSuggestions provides search suggestions based on partial input
 func (s *SQLiteStorage) GetSearchSuggestions(partial string, limit int) ([]string, error) {
 	if limit <= 0 {
@@ -349,7 +446,7 @@ func (s *SQLiteStorage) GetSearchSuggestions(partial string, limit int) ([]strin
 		LIMIT ?
 	`
 
-	rows, err := s.db.Query(query, partial+"%", limit/2)
+	rows, err := s.rdb().Query(query, partial+"%", limit/2)
 	if err != nil {
 		return suggestions, err
 	}
@@ -371,7 +468,7 @@ func (s *SQLiteStorage) GetSearchSuggestions(partial string, limit int) ([]strin
 		LIMIT ?
 	`
 
-	rows, err = s.db.Query(query, partial+"%", limit-len(suggestions))
+	rows, err = s.rdb().Query(query, partial+"%", limit-len(suggestions))
 	if err != nil {
 		return suggestions, err
 	}
@@ -394,17 +491,17 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 	// Total counts
 	var entityCount, relationCount, observationCount int
 
-	err := s.db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&entityCount)
+	err := s.rdb().QueryRow("SELECT COUNT(*) FROM entities").Scan(&entityCount)
 	if err != nil {
 		return nil, err
 	}
 
-	err = s.db.QueryRow("SELECT COUNT(*) FROM relations").Scan(&relationCount)
+	err = s.rdb().QueryRow("SELECT COUNT(*) FROM relations").Scan(&relationCount)
 	if err != nil {
 		return nil, err
 	}
 
-	err = s.db.QueryRow("SELECT COUNT(*) FROM observations").Scan(&observationCount)
+	err = s.rdb().QueryRow("SELECT COUNT(*) FROM observations").Scan(&observationCount)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +512,7 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 
 	// Entity type distribution
 	entityTypes := make(map[string]int)
-	rows, err := s.db.Query("SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type ORDER BY COUNT(*) DESC")
+	rows, err := s.rdb().Query("SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type ORDER BY COUNT(*) DESC")
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -430,7 +527,7 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 
 	// Relation type distribution
 	relationTypes := make(map[string]int)
-	rows, err = s.db.Query("SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC")
+	rows, err = s.rdb().Query("SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC")
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -445,8 +542,8 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 
 	// Most connected entities
 	connectedEntities := []map[string]interface{}{}
-	rows, err = s.db.Query(`
-		SELECT e.name, e.entity_type, 
+	rows, err = s.rdb().Query(`
+		SELECT e.name, e.entity_type,
 		       COUNT(DISTINCT r1.id) + COUNT(DISTINCT r2.id) as connection_count
 		FROM entities e
 		LEFT JOIN relations r1 ON e.id = r1.from_entity_id
@@ -473,4 +570,47 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 	analysis["most_connected"] = connectedEntities
 
 	return analysis, nil
+}
+
+// reorderByRecency reorders entity IDs by last access time (most recent first).
+// Entities that have never been accessed fall back to updated_at/created_at.
+func (s *SQLiteStorage) reorderByRecency(ids []int64) []int64 {
+	if len(ids) <= 1 {
+		return ids
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id FROM entities
+		WHERE id IN (%s)
+		ORDER BY
+			(1.0 / (1.0 + 0.01 * MAX(0, COALESCE(julianday('now') - julianday(COALESCE(last_accessed_at, updated_at, created_at)), 0))))
+			* (1.0 + log(2.0 + COALESCE(access_count, 0)) / log(2.0))
+			DESC
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.rdb().Query(query, args...)
+	if err != nil {
+		return ids // fallback to original order
+	}
+	defer rows.Close()
+
+	var reordered []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			reordered = append(reordered, id)
+		}
+	}
+
+	if len(reordered) == len(ids) {
+		return reordered
+	}
+	return ids // fallback if something went wrong
 }

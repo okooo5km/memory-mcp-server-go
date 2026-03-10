@@ -47,12 +47,22 @@ type EntitySearchHit struct {
 	RelationsCount    int      `json:"relationsCount"`    // related relations count
 }
 
+// RelatedHit represents an entity related to a search hit via graph traversal
+type RelatedHit struct {
+	Name         string `json:"name"`
+	EntityType   string `json:"entityType"`
+	RelationType string `json:"relationType"` // the relation connecting to the matched entity
+	RelatedTo    string `json:"relatedTo"`    // which matched entity this is related to
+	Direction    string `json:"direction"`    // "outgoing" or "incoming"
+}
+
 // SearchResult holds search results with pagination info
 type SearchResult struct {
-	Entities []EntitySearchHit `json:"entities"`
-	Total    int               `json:"total"`
-	Limit    int               `json:"limit"`
-	HasMore  bool              `json:"hasMore"`
+	Entities        []EntitySearchHit `json:"entities"`
+	RelatedEntities []RelatedHit      `json:"relatedEntities,omitempty"` // 1-hop related entities
+	Total           int               `json:"total"`
+	Limit           int               `json:"limit"`
+	HasMore         bool              `json:"hasMore"`
 }
 
 // GraphSummary holds a lightweight summary of the entire graph
@@ -67,6 +77,21 @@ type GraphSummary struct {
 	Entities []EntitySummary `json:"entities"`
 	Limit    int             `json:"limit"`
 	HasMore  bool            `json:"hasMore"`
+}
+
+// MergeResult holds the result of merging two entities
+type MergeResult struct {
+	MergedObservations int  `json:"mergedObservations"` // observations migrated to target
+	MergedRelations    int  `json:"mergedRelations"`    // relations redirected to target
+	SourceDeleted      bool `json:"sourceDeleted"`      // whether source entity was removed
+}
+
+// Conflict represents a potential contradiction between two observations
+type Conflict struct {
+	EntityName   string `json:"entityName"`
+	Observation1 string `json:"observation1"`
+	Observation2 string `json:"observation2"`
+	Type         string `json:"type"` // "potential_duplicate" or "potential_contradiction"
 }
 
 // Storage defines the interface for knowledge graph persistence
@@ -93,6 +118,14 @@ type Storage interface {
 	ReadGraph(mode string, limit int) (interface{}, error) // mode: "summary" or "full"
 	SearchNodes(query string, limit int) (*SearchResult, error)
 	OpenNodes(names []string) (*KnowledgeGraph, error)
+
+	// Entity management operations
+	MergeEntities(sourceName, targetName string) (*MergeResult, error)
+	UpdateEntityType(name string, newType string) error
+	UpdateObservation(entityName string, oldContent string, newContent string) error
+
+	// Conflict detection
+	DetectConflicts(entityName string) ([]Conflict, error)
 
 	// Migration support
 	ExportData() (*KnowledgeGraph, error)

@@ -5,449 +5,157 @@
 ![Go Platform](https://img.shields.io/badge/platform-cross--platform-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-## ✨ Features
+## Features
 
-* **High-Performance Storage**: SQLite backend with automatic JSONL migration for optimal performance
-* **Knowledge Graph Management**: Maintain a persistent graph of entities and their relationships
-* **Entity Management**: Create, retrieve, update, and delete entities with custom types
-* **Relation Tracking**: Define and manage relationships between entities in active voice
-* **Observation System**: Add and remove observations about entities over time
-* **Advanced Search**: Fast search with automatic fallback from FTS5 to basic search
-* **Seamless Migration**: Automatic upgrade from JSONL to SQLite with zero user intervention
-* **Memory Efficient**: Optimized for both storage space and runtime memory usage
-* **Flexible Transport Modes**: Supports stdio, SSE (with keep-alive), and Streamable HTTP transports
-* **Robustness**: Panic recovery in tool handlers; optional sampling capability declaration for client-driven generation
-* **Cross-Platform**: Works on Linux, macOS, and Windows with pure Go SQLite (no CGO required)
+* **High-Performance Storage**: SQLite backend with WAL mode, read/write connection separation for concurrent access
+* **Knowledge Graph Management**: Persistent graph of entities, relationships, and observations
+* **Advanced Search**: FTS5 full-text search with BM25 ranking, synonym expansion, and time-decay scoring
+* **Graph Traversal**: Search results include 1-hop related entities for richer context
+* **Entity Management**: Merge duplicate entities, update types, modify observations, detect conflicts
+* **Observation Metadata**: Track source, confidence, and tags for each observation
+* **MCP Resources & Prompts**: AI clients can passively load graph summaries and use guided memory workflows
+* **Flexible Transport**: Supports stdio, SSE, and Streamable HTTP with optional Bearer authentication
+* **Seamless Migration**: Automatic upgrade from JSONL to SQLite with zero intervention
+* **Cross-Platform**: Pure Go SQLite (no CGO required), works on Linux, macOS, and Windows
 
 ## Available Tools
 
-* `create_entities` - Create multiple new entities in the knowledge graph
-  * `entities` (array, required): Array of entity objects to create
-    * `name` (string): The name of the entity
-    * `entityType` (string): The type of the entity
-    * `observations` (array of strings): Observations associated with the entity
+### Core CRUD
 
-* `create_relations` - Create multiple new relations between entities
-  * `relations` (array, required): Array of relation objects
-    * `from` (string): The name of the entity where the relation starts
-    * `to` (string): The name of the entity where the relation ends
-    * `relationType` (string): The type of the relation (in active voice)
+| Tool | Description |
+|------|-------------|
+| `create_entities` | Create new entities with name, type, and observations |
+| `create_relations` | Create relations between entities (active voice) |
+| `add_observations` | Add observations to existing entities |
+| `delete_entities` | Delete entities and their associated relations |
+| `delete_relations` | Delete specific relations |
+| `delete_observations` | Delete specific observations from entities |
 
-* `add_observations` - Add new observations to existing entities
-  * `observations` (array, required): Array of observation additions
-    * `entityName` (string): The name of the entity to add observations to
-    * `contents` (array of strings): The observations to add
+### Query
 
-* `delete_entities` - Delete multiple entities and their associated relations
-  * `entityNames` (array, required): Array of entity names to delete
+| Tool | Description |
+|------|-------------|
+| `search_nodes` | Search entities by keyword with FTS5, synonym expansion, and graph traversal. Returns lightweight results with snippets and related entities |
+| `open_nodes` | Get full details of specific entities by exact name |
+| `read_graph` | Get graph overview (`summary` mode) or full export (`full` mode) |
 
-* `delete_observations` - Delete specific observations from entities
-  * `deletions` (array, required): Array of observation deletions
-    * `entityName` (string): The name of the entity containing the observations
-    * `observations` (array of strings): The observations to delete
+### Entity Management
 
-* `delete_relations` - Delete multiple relations from the knowledge graph
-  * `relations` (array, required): Array of relation objects to delete
-    * `from` (string): The source entity name
-    * `to` (string): The target entity name
-    * `relationType` (string): The relation type
+| Tool | Description |
+|------|-------------|
+| `merge_entities` | Merge two entities: migrate observations and relations from source to target, then delete source |
+| `update_entities` | Change an entity's type |
+| `update_observations` | Replace an observation's content |
+| `detect_conflicts` | Find potential duplicates and contradictions within an entity's observations |
 
-* `read_graph` - Read the entire knowledge graph
-  * No parameters required
+### MCP Resources
 
-* `search_nodes` - Search for nodes in the knowledge graph based on a query
-  * `query` (string, required): Search query to match against entity names, types, and observations
+| URI | Description |
+|-----|-------------|
+| `memory://graph/summary` | Graph statistics and entity type distribution |
+| `memory://graph/recent` | Recently accessed entities |
+| `memory://graph/types` | All entity and relation type enumerations |
+| `memory://entities/{name}` | Full details of a specific entity |
 
-* `open_nodes` - Open specific nodes in the knowledge graph by their names
-  * `names` (array, required): Array of entity names to retrieve
+### MCP Prompts
+
+| Prompt | Description |
+|--------|-------------|
+| `memory-recall` | Recall relevant memories by topic |
+| `memory-save` | Analyze conversation text and suggest what to save |
+| `memory-review` | Generate a comprehensive review of an entity's memories |
 
 ## Installation
 
-### Option 1: Homebrew (macOS/Linux)
+### Homebrew (macOS/Linux)
 
 ```bash
 brew install okooo5km/tap/mms
 ```
 
-### Option 2: Quick Install (macOS/Linux)
-
-Install the latest version with a single command:
+### Quick Install Script (macOS/Linux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash
 ```
 
-Options:
+Options: `-v v0.2.3` for a specific version, `-d /usr/local/bin` for a custom directory.
 
-- Specific version: `curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash -s -- -v v0.2.3`
-- Custom install dir: `... | bash -s -- -d /usr/local/bin`
+### Pre-built Binaries
 
-**Update:**
-
-```bash
-# Homebrew
-brew upgrade mms
-
-# Or reinstall via script
-curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/install.sh | bash
-
-# Check current version
-mms --version
-```
-
-Note: Windows users, please see the Windows section below.
-
-### Option 3: Download Pre-built Binary
-
-Download the latest pre-built binary for your platform from the [GitHub Releases](https://github.com/okooo5km/memory-mcp-server-go/releases/latest) page.
-
-<details>
-<summary><b>macOS Installation</b></summary>
-
-#### macOS with Apple Silicon
+Download from [GitHub Releases](https://github.com/okooo5km/memory-mcp-server-go/releases/latest). Available for macOS (arm64/amd64), Linux (arm64/amd64), and Windows (arm64/amd64).
 
 ```bash
-# Download the arm64 build
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_darwin_arm64.tar.gz -o mms.tar.gz
-tar -xzf mms.tar.gz
-chmod +x mms
-
-# Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine mms || true
-
-# Install to your local bin directory
-mkdir -p ~/.local/bin
-mv mms ~/.local/bin/mms
-rm mms.tar.gz
+# Example: macOS Apple Silicon
+curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_darwin_arm64.tar.gz | tar xz
+chmod +x mms && mv mms ~/.local/bin/
 ```
 
-#### macOS with Intel Processor
+### Build from Source
 
 ```bash
-# Download the x86_64 build
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_darwin_amd64.tar.gz -o mms.tar.gz
-tar -xzf mms.tar.gz
-chmod +x mms
-
-# Remove quarantine attribute to avoid security warnings
-xattr -d com.apple.quarantine mms || true
-
-# Install to your local bin directory
-mkdir -p ~/.local/bin
-mv mms ~/.local/bin/mms
-rm mms.tar.gz
+git clone https://github.com/okooo5km/memory-mcp-server-go.git
+cd memory-mcp-server-go
+make build        # binary in .build/
 ```
 
-</details>
-
-<details>
-<summary><b>Linux Installation</b></summary>
-
-#### Linux on x86_64 (most common)
-
-```bash
-# Download the amd64 build
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_linux_amd64.tar.gz -o mms.tar.gz
-tar -xzf mms.tar.gz
-chmod +x mms
-
-# Install to your local bin directory
-mkdir -p ~/.local/bin
-mv mms ~/.local/bin/mms
-rm mms.tar.gz
-```
-
-#### Linux on ARM64 (e.g., Raspberry Pi 4, AWS Graviton)
-
-```bash
-# Download the arm64 build
-curl -L https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_linux_arm64.tar.gz -o mms.tar.gz
-tar -xzf mms.tar.gz
-chmod +x mms
-
-# Install to your local bin directory
-mkdir -p ~/.local/bin
-mv mms ~/.local/bin/mms
-rm mms.tar.gz
-```
-
-</details>
-
-<details>
-<summary><b>Windows Installation</b></summary>
-
-#### Windows on x86_64 (most common)
-
-* Download the [Windows AMD64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_windows_amd64.zip)
-* Extract the ZIP file
-* Move `mms.exe` to a location in your PATH
-
-#### Windows on ARM64 (e.g., Windows on ARM devices)
-
-* Download the [Windows ARM64 version](https://github.com/okooo5km/memory-mcp-server-go/releases/latest/download/mms_VERSION_windows_arm64.zip)
-* Extract the ZIP file
-* Move `mms.exe` to a location in your PATH
-
-</details>
-
-Make sure the installation directory is in your PATH:
-
-* **macOS/Linux**: Add `export PATH="$HOME/.local/bin:$PATH"` to your shell configuration file (`.bashrc`, `.zshrc`, etc.)
-* **Windows**: Add the directory to your system PATH through the System Properties > Environment Variables dialog
-
-Optionally verify checksums (recommended): releases include `checksums.txt`.
-
-```bash
-# macOS/Linux example
-cd ~/.local/bin/..  # where you downloaded the artifact
-shasum -a 256 -c checksums.txt | grep mms || true
-```
-
-### Option 4: Build from Source
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/okooo5km/memory-mcp-server-go.git
-   cd memory-mcp-server-go
-   ```
-
-2. Build the project:
-
-   **Using Make (recommended):**
-
-   ```bash
-   # Build for your current platform
-   make build
-
-   # Build for all platforms at once (pure Go SQLite, no CGO)
-   make build-all
-
-   # Create distribution packages for all platforms
-   make dist
-   ```
-
-   The binaries will be placed in the `.build` directory. All builds use pure Go SQLite for maximum compatibility.
-
-   **Using Go directly:**
-
-   ```bash
-   go build -o mms
-   ```
-
-3. Install the binary:
-
-   ```bash
-   # Install to user directory (recommended, no sudo required)
-   mkdir -p ~/.local/bin
-   cp .build/mms ~/.local/bin/
-   ```
-
-   Make sure `~/.local/bin` is in your PATH by adding to your shell configuration file:
-
-   ```bash
-   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
-   source ~/.zshrc  # or source ~/.bashrc
-   ```
+Make sure `~/.local/bin` (or your chosen directory) is in your `PATH`.
 
 ## Command Line Arguments
 
-The server supports the following command line arguments:
+```
+mms [options]
+  -t, --transport string   Transport type: stdio, sse, or http (default "stdio")
+  -m, --memory string      Memory file path (auto-detected if not specified)
+  -p, --port int           Port for SSE/HTTP transport (default 8080)
+  -v, --version            Show version
 
-* `-t, --transport`: Transport type: `stdio`, `sse`, or `http` (defaults to `stdio`)
-* `-m, --memory`: Custom path for storing the knowledge graph (optional)
-* `-p, --port`: Port number for SSE transport (defaults to 8080)
-* `--storage`: Force storage type (sqlite or jsonl, auto-detected if not specified)
-* `--auto-migrate`: Enable automatic JSONL to SQLite migration (enabled by default)
-* `--migrate`: Migrate data from JSONL file to SQLite (standalone operation)
-* `--migrate-to`: Destination SQLite file for migration
-* `--dry-run`: Perform a dry run of migration without making changes
-* `--force`: Force overwrite destination file during migration
-* Streamable HTTP options:
-  * `--http-endpoint`, `--http_ep`: HTTP endpoint path (default: `/mcp`)
-  * `--http-heartbeat`: Heartbeat interval, e.g., `30s`, `1m` (default: `30s`)
-  * `--http-stateless`: Run HTTP transport in stateless mode (no server-side session tracking)
-* Authentication:
-  * `--auth-bearer <token>`: Require `Authorization: Bearer <token>` for SSE and Streamable HTTP endpoints
+  Storage:
+  --storage string         Force storage type: sqlite or jsonl (auto-detected)
+  --auto-migrate           Auto-migrate JSONL to SQLite (default true)
 
-Example usage:
+  Migration:
+  --migrate string         Source JSONL file for manual migration
+  --migrate-to string      Destination SQLite file
+  --dry-run                Dry run migration
+  --force                  Overwrite destination
+
+  Streamable HTTP:
+  --http-endpoint string   HTTP endpoint path (default "/mcp")
+  --http-heartbeat string  Heartbeat interval (default "30s")
+  --http-stateless         Stateless HTTP mode
+
+  Auth:
+  --auth-bearer string     Require Bearer token for SSE/HTTP
+```
+
+Examples:
 
 ```bash
-# Use default settings (stdio transport, auto-detect storage)
-mms
-
-# Specify a custom memory file location (auto-migration enabled)
-mms --memory /path/to/your/memory.json
-
-# Force SQLite storage (skips auto-detection)
-mms --storage sqlite --memory /path/to/your/data.db
-
-# Manually migrate JSONL to SQLite
-mms --migrate /path/to/memory.json --migrate-to /path/to/memory.db
-
-# Use SSE transport on a specific port
-mms --transport sse --port 9000
-
-# Streamable HTTP transport with custom endpoint and heartbeat
-mms --transport http --port 8080 --http-endpoint /mcp --http-heartbeat 45s
-
-# Enable Bearer authentication (applies to SSE/HTTP)
-mms --transport http --port 8080 --http-endpoint /mcp --auth-bearer mytoken
+mms                                          # stdio, auto-detect storage
+mms --memory /path/to/memory.json            # custom path, auto-migrates to SQLite
+mms --transport sse --port 9000              # SSE transport
+mms --transport http --auth-bearer mytoken   # Streamable HTTP with auth
 ```
-
-## Streamable HTTP Usage (cURL examples)
-
-1) Initialize session (response header will include `Mcp-Session-Id`):
-
-```bash
-curl -i -X POST http://localhost:8080/mcp \
-  -H 'Content-Type: application/json' \
-  # If started with --auth-bearer, include the header below
-  -H 'Authorization: Bearer mytoken' \
-  -d '{
-    "jsonrpc":"2.0",
-    "id":1,
-    "method":"initialize",
-    "params":{
-      "protocolVersion":"2025-03-26",
-      "capabilities":{}
-    }
-  }'
-```
-
-2) Listen for server messages (notifications, pings, sampling requests):
-
-```bash
-curl -N http://localhost:8080/mcp \
-  -H 'Authorization: Bearer mytoken' \
-  -H 'Mcp-Session-Id: <paste-session-id-from-step-1>'
-```
-
-3) Call a tool (example: `search_nodes`):
-
-```bash
-curl -s http://localhost:8080/mcp \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer mytoken' \
-  -H 'Mcp-Session-Id: <paste-session-id-from-step-1>' \
-  -d '{
-    "jsonrpc":"2.0",
-    "id":2,
-    "method":"tools/call",
-    "params":{
-      "name":"search_nodes",
-      "arguments":{"query":"idea"}
-    }
-  }'
-```
-
-4) Terminate session:
-
-```bash
-curl -X DELETE http://localhost:8080/mcp \
-  -H 'Authorization: Bearer mytoken' \
-  -H 'Mcp-Session-Id: <paste-session-id-from-step-1>'
-```
-
-### SSE Usage with Bearer (optional)
-
-When running `--transport sse` with `--auth-bearer mytoken`:
-
-```bash
-# Connect SSE stream
-curl -N http://localhost:8080/sse -H 'Authorization: Bearer mytoken'
-
-# Send a JSON-RPC message
-curl -s -X POST http://localhost:8080/message \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer mytoken' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}'
-```
-
-## Security & Deployment
-
-- Always deploy behind TLS. Terminate HTTPS at a reverse proxy (Nginx/Caddy/Traefik) and bind this server to localhost.
-- Require authentication in any non-local environment: `--auth-bearer $(openssl rand -hex 32)` and rotate regularly.
-- Make sure your proxy forwards the `Authorization` header to the backend. Example (Nginx):
-
-```nginx
-location /mcp {
-  proxy_set_header Authorization $http_authorization;
-  proxy_pass http://127.0.0.1:8080/mcp;
-}
-location /sse {
-  proxy_set_header Authorization $http_authorization;
-  proxy_pass http://127.0.0.1:8080/sse;
-}
-location /message {
-  proxy_set_header Authorization $http_authorization;
-  proxy_pass http://127.0.0.1:8080/message;
-}
-```
-
-- SSE endpoint sets `Access-Control-Allow-Origin: *`. Do not rely on browser origin checks; enforce auth at the proxy and server.
-- Limit exposure: open only required ports, run as a non-root user, and enable rate limiting at the proxy if serving untrusted clients.
-
-## Storage System
-
-### Automatic Storage Upgrade
-
-The Memory MCP Server automatically detects and upgrades your storage for optimal performance:
-
-* **New installations**: Start with SQLite by default for best performance
-* **Existing JSONL users**: Automatic migration to SQLite on first run
-* **Seamless transition**: Your original commands continue to work unchanged
-* **Backup safety**: Original files are preserved during migration
-
-### Storage Types
-
-1. **SQLite** (Recommended)
-   * 🚀 **1.9x faster** read and search performance
-   * 🧠 **1.9x more memory efficient**
-   * 💪 ACID transactions and data integrity
-   * 🔍 Advanced search capabilities with FTS5
-   * 📊 Better for datasets with >100 entities
-
-2. **JSONL** (Legacy)
-   * 📁 **3x smaller** file sizes
-   * ⚡ **55x faster** startup time
-   * 📝 Human-readable text format
-   * 🔧 Good for simple datasets <50 entities
-
-### Memory File Storage Path
-
-The server determines storage location using the following priority rules:
-
-1. **Command line argument**: If you provide a path with the `-m` or `--memory` flag
-2. **Environment variable**: `MEMORY_FILE_PATH` environment variable
-3. **Default location**: `memory.json` in the same directory as the executable
-
-**Path handling rules:**
-
-* Absolute paths (e.g., `/home/user/data/memory.json`) are used as-is
-* Relative paths (e.g., `custom/memory.json`) are resolved relative to the executable's directory
-* SQLite files automatically use `.db` extension (e.g., `memory.json` → `memory.db`)
 
 ## Configuration
 
-### Configure for Claude.app
-
-Add to your Claude settings:
+### Claude Desktop / Claude.app
 
 ```json
 "mcpServers": {
   "memory": {
     "command": "mms",
     "env": {
-      "MEMORY_FILE_PATH": "/Path/Of/Your/memory.json"
+      "MEMORY_FILE_PATH": "/path/to/memory.json"
     }
   }
 }
 ```
 
-### Configure for Cursor
+### Cursor
 
-Add the following configuration to your Cursor editor's Settings - mcp.json:
+Add to Cursor Settings > mcp.json:
 
 ```json
 {
@@ -455,7 +163,7 @@ Add the following configuration to your Cursor editor's Settings - mcp.json:
     "memory": {
       "command": "mms",
       "env": {
-        "MEMORY_FILE_PATH": "/Path/Of/Your/memory.json"
+        "MEMORY_FILE_PATH": "/path/to/memory.json"
       }
     }
   }
@@ -464,62 +172,92 @@ Add the following configuration to your Cursor editor's Settings - mcp.json:
 
 ### Example System Prompt
 
-You can use the following system prompt to help Claude utilize the memory-mcp-server effectively:
-
 ```text
-You have access to a Knowledge Graph memory system, which can store and retrieve information across conversations. Use it to remember important details about the user, their preferences, and any facts they've shared.
+You have access to a Knowledge Graph memory system that persists across conversations.
 
-When you discover important information, save it using memory tools:
-- `create_entities` to add new people, places, or concepts
-- `create_relations` to record how entities relate to each other
-- `add_observations` to record facts about existing entities
+Saving memories:
+- create_entities: Add new people, places, concepts (check search_nodes first to avoid duplicates)
+- create_relations: Record how entities relate to each other
+- add_observations: Add facts to existing entities
 
-Before answering questions that might require past context, check your memory:
-- `search_nodes` to find relevant information
-- `open_nodes` to retrieve specific entities
-- `read_graph` to get a complete view of your knowledge
+Retrieving memories:
+- search_nodes: Find relevant entities by keyword (supports synonyms like JS→JavaScript)
+- open_nodes: Get full details of specific entities
+- read_graph: Get an overview of all stored knowledge (use "summary" mode first)
 
-Always prioritize information from your memory when responding to the user, especially when they reference past conversations.
+Managing memories:
+- merge_entities: Combine duplicate entities
+- detect_conflicts: Find contradictory observations
+- update_entities / update_observations: Fix incorrect data
+
+Always check your memory before answering questions that might require past context.
 ```
 
-## Development Requirements
+## Streamable HTTP Usage
 
-* Go 1.24 or later
-* github.com/mark3labs/mcp-go v0.38.0+
-* modernc.org/sqlite (pure Go SQLite driver)
+```bash
+# 1. Initialize session
+curl -i -X POST http://localhost:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer mytoken' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}'
 
-### Versioning
+# 2. Listen for server messages
+curl -N http://localhost:8080/mcp \
+  -H 'Authorization: Bearer mytoken' \
+  -H 'Mcp-Session-Id: <session-id>'
 
-- Source of truth: the `VERSION` file at repo root.
-- The binary embeds this value via `//go:embed VERSION` and also exposes a link-time variable `main.version`.
-- Override methods (without editing the file):
-  - Make: `make build VERSION=1.2.3`
-  - Go: `go build -ldflags "-X main.version=1.2.3"`
-  - GoReleaser: Automatically injects version from git tag
+# 3. Call a tool
+curl -s http://localhost:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer mytoken' \
+  -H 'Mcp-Session-Id: <session-id>' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_nodes","arguments":{"query":"idea"}}}'
+
+# 4. Terminate session
+curl -X DELETE http://localhost:8080/mcp \
+  -H 'Authorization: Bearer mytoken' \
+  -H 'Mcp-Session-Id: <session-id>'
+```
+
+## Security & Deployment
+
+- Deploy behind TLS (Nginx/Caddy/Traefik), bind server to localhost
+- Use `--auth-bearer $(openssl rand -hex 32)` in any non-local environment
+- Forward `Authorization` header from reverse proxy to backend
+- Run as non-root, open only required ports, enable rate limiting for untrusted clients
+
+## Storage System
+
+### Storage Types
+
+| | SQLite (Recommended) | JSONL (Legacy) |
+|---|---|---|
+| **Read/Search** | 1.9x faster | Baseline |
+| **Memory** | 1.9x more efficient | Baseline |
+| **File Size** | Larger | 3x smaller |
+| **Startup** | Slower | 55x faster |
+| **Features** | FTS5, ACID, WAL, concurrent reads | Human-readable |
+| **Best For** | >100 entities | <50 entities |
+
+### Migration
+
+```bash
+# Automatic (default): just use your existing JSONL path
+mms --memory /path/to/memory.json  # auto-migrates to .db
+
+# Manual migration
+mms --migrate /path/to/memory.json --migrate-to /path/to/memory.db
+
+# Dry run
+mms --migrate /path/to/memory.json --dry-run
+```
 
 ## Knowledge Graph Structure
 
-The Memory MCP Server uses a simple graph structure to store knowledge:
-
-* **Entities**: Nodes in the graph with a name, type, and list of observations
-* **Relations**: Edges between entities with a relation type in active voice
-* **Observations**: Facts or details associated with entities
-
-The knowledge graph is persisted to disk using SQLite for optimal performance, with automatic migration from legacy JSONL format.
-
-## Performance
-
-Based on comprehensive benchmarking with real data (559 entities, 436 relations):
-
-| Metric | SQLite | JSONL | Winner |
-|--------|--------|-------|---------|
-| **File Size** | 860 KB | 290 KB | JSONL (3x smaller) |
-| **Startup Time** | 684μs | 12μs | JSONL (55x faster) |
-| **Read Performance** | 3.3ms | 5.6ms | SQLite (1.7x faster) |
-| **Search Performance** | 17.5ms | 33ms | SQLite (1.9x faster) |
-| **Memory Usage** | 848 KB | 1.6 MB | SQLite (1.9x less) |
-
-**Overall Winner: SQLite** - Better for typical knowledge graph operations with superior read/search performance and memory efficiency.
+* **Entities**: Nodes with a name, type, and list of observations (each with optional metadata: source, confidence, tags)
+* **Relations**: Directed edges between entities with a relation type in active voice
+* **Observations**: Atomic facts associated with entities, supporting time-decay ranking based on access patterns
 
 ## Usage Examples
 
@@ -530,12 +268,12 @@ Based on comprehensive benchmarking with real data (559 entities, 436 relations)
   "entities": [
     {
       "name": "John Smith",
-      "entityType": "Person",
+      "entityType": "person",
       "observations": ["Software engineer", "Lives in San Francisco", "Enjoys hiking"]
     },
     {
       "name": "Acme Corp",
-      "entityType": "Company",
+      "entityType": "company",
       "observations": ["Founded in 2010", "Tech startup"]
     }
   ]
@@ -547,103 +285,60 @@ Based on comprehensive benchmarking with real data (559 entities, 436 relations)
 ```json
 {
   "relations": [
-    {
-      "from": "John Smith",
-      "to": "Acme Corp",
-      "relationType": "works at"
-    }
+    { "from": "John Smith", "to": "Acme Corp", "relationType": "works at" }
   ]
 }
 ```
 
-### Adding Observations
+### Searching with Graph Traversal
+
+Search for "John" returns:
+- **Direct hits**: Entities matching "John" with observation snippets
+- **Related entities**: Entities connected to "John" via relations (e.g., "Acme Corp" via "works at")
+
+### Merging Duplicate Entities
 
 ```json
 {
-  "observations": [
-    {
-      "entityName": "John Smith",
-      "contents": ["Recently promoted to Senior Engineer", "Working on AI projects"]
-    }
-  ]
+  "sourceName": "React.js",
+  "targetName": "React"
 }
 ```
 
-### Searching Nodes
+Merges all observations and relations from "React.js" into "React", then deletes "React.js".
+
+### Detecting Conflicts
 
 ```json
 {
-  "query": "San Francisco"
+  "entityName": "John Smith"
 }
 ```
 
-### Opening Specific Nodes
+Returns potential duplicates (>60% prefix overlap) and contradictions (antonym keyword pairs like "likes/dislikes").
 
-```json
-{
-  "names": ["John Smith", "Acme Corp"]
-}
+## Development
+
+```bash
+make fmt          # Format code
+make check        # Static analysis (gofmt + go vet)
+go test ./...     # Run tests
+make build        # Build binary
+
+# Full verification
+make fmt && make check && go test ./... && make build
 ```
 
-## Use Cases
+### Requirements
 
-* **Long-term Memory for AI Assistants**: Enable AI assistants to remember user preferences, past interactions, and important facts
-* **Knowledge Management**: Organize information about people, places, events, and concepts
-* **Relationship Tracking**: Maintain networks of relationships between entities
-* **Context Persistence**: Preserve important context across multiple sessions
-* **Journal and Daily Logs**: Maintain a structured record of events, activities, and reflections over time, making it easy to retrieve and relate past experiences chronologically
+* Go 1.24+
+* github.com/mark3labs/mcp-go v0.19.0+
+* modernc.org/sqlite (pure Go SQLite, no CGO)
 
-## Version History
+### Versioning
 
-See GitHub Releases for version history and changelog.
+Version is managed via the `VERSION` file. Override with `make build VERSION=1.2.3` or `go build -ldflags "-X main.version=1.2.3"`.
 
 ## License
 
-memory-mcp-server-go is licensed under the MIT License. This means you are free to use, modify, and distribute the software, subject to the terms and conditions of the MIT License.
-
-## Migration Guide
-
-### From JSONL to SQLite
-
-If you're currently using the JSONL format, the server will automatically migrate your data:
-
-1. **Automatic Migration** (Recommended)
-
-   ```bash
-   # Your existing command continues to work
-   mms --memory /path/to/your/memory.json
-   # Server detects JSONL, migrates to memory.db automatically
-   ```
-
-2. **Manual Migration**
-
-   ```bash
-   # Migrate specific files
-   mms --migrate /path/to/memory.json --migrate-to /path/to/memory.db
-
-   # Dry run to see what will be migrated
-   mms --migrate /path/to/memory.json --dry-run
-   ```
-
-3. **Force Storage Type**
-
-   ```bash
-   # Skip auto-detection, use SQLite directly
-   mms --storage sqlite --memory /path/to/memory.db
-
-   # Continue using JSONL (not recommended for large datasets)
-   mms --storage jsonl --memory /path/to/memory.json
-   ```
-
-## About
-
-A high-performance Go implementation of a knowledge graph memory server for Model Context Protocol (MCP), enabling persistent memory capabilities for large language models. This version features automatic SQLite migration, advanced search capabilities, and optimized performance compared to the [official TypeScript implementation](https://github.com/modelcontextprotocol/servers/tree/main/src/memory).
-
-### Key Improvements over TypeScript Version
-
-* 🚀 **1.9x faster** read and search operations
-* 🧠 **1.9x more memory efficient**
-* 📦 **Pure Go SQLite** - no CGO dependencies
-* 🔄 **Automatic migration** from JSONL format
-* 🔍 **Advanced search** with FTS5 and fallback
-* 🌍 **Cross-platform** builds on macOS without Docker
+MIT License. See [LICENSE](LICENSE) for details.

@@ -685,6 +685,206 @@ func (j *JSONLStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 	return result, nil
 }
 
+// MergeEntities merges source entity into target entity.
+func (j *JSONLStorage) MergeEntities(sourceName, targetName string) (*MergeResult, error) {
+	graph, err := j.loadGraph()
+	if err != nil {
+		return nil, err
+	}
+
+	// Find source and target
+	sourceIdx, targetIdx := -1, -1
+	for i, e := range graph.Entities {
+		if e.Name == sourceName {
+			sourceIdx = i
+		}
+		if e.Name == targetName {
+			targetIdx = i
+		}
+	}
+	if sourceIdx == -1 {
+		return nil, fmt.Errorf("source entity %q not found", sourceName)
+	}
+	if targetIdx == -1 {
+		return nil, fmt.Errorf("target entity %q not found", targetName)
+	}
+
+	// Merge observations (deduplicate)
+	mergedObs := 0
+	existingObs := make(map[string]bool)
+	for _, obs := range graph.Entities[targetIdx].Observations {
+		existingObs[obs] = true
+	}
+	for _, obs := range graph.Entities[sourceIdx].Observations {
+		if !existingObs[obs] {
+			graph.Entities[targetIdx].Observations = append(graph.Entities[targetIdx].Observations, obs)
+			mergedObs++
+		}
+	}
+
+	// Redirect relations
+	mergedRels := 0
+	for i, rel := range graph.Relations {
+		if rel.From == sourceName {
+			graph.Relations[i].From = targetName
+			mergedRels++
+		}
+		if rel.To == sourceName {
+			graph.Relations[i].To = targetName
+			mergedRels++
+		}
+	}
+
+	// Remove source entity
+	graph.Entities = append(graph.Entities[:sourceIdx], graph.Entities[sourceIdx+1:]...)
+
+	// Deduplicate relations
+	seen := make(map[string]bool)
+	dedupedRels := []Relation{}
+	for _, rel := range graph.Relations {
+		key := fmt.Sprintf("%s|%s|%s", rel.From, rel.To, rel.RelationType)
+		if !seen[key] {
+			seen[key] = true
+			dedupedRels = append(dedupedRels, rel)
+		}
+	}
+	graph.Relations = dedupedRels
+
+	if err := j.saveGraph(graph); err != nil {
+		return nil, err
+	}
+
+	return &MergeResult{
+		MergedObservations: mergedObs,
+		MergedRelations:    mergedRels,
+		SourceDeleted:      true,
+	}, nil
+}
+
+// UpdateEntityType updates the entity type for a given entity name.
+func (j *JSONLStorage) UpdateEntityType(name string, newType string) error {
+	graph, err := j.loadGraph()
+	if err != nil {
+		return err
+	}
+
+	for i, e := range graph.Entities {
+		if e.Name == name {
+			graph.Entities[i].EntityType = newType
+			return j.saveGraph(graph)
+		}
+	}
+	return fmt.Errorf("entity %q not found", name)
+}
+
+// UpdateObservation replaces an observation's content for a given entity.
+func (j *JSONLStorage) UpdateObservation(entityName string, oldContent string, newContent string) error {
+	graph, err := j.loadGraph()
+	if err != nil {
+		return err
+	}
+
+	for i, e := range graph.Entities {
+		if e.Name == entityName {
+			for k, obs := range e.Observations {
+				if obs == oldContent {
+					graph.Entities[i].Observations[k] = newContent
+					return j.saveGraph(graph)
+				}
+			}
+			return fmt.Errorf("observation not found for entity %q", entityName)
+		}
+	}
+	return fmt.Errorf("entity %q not found", entityName)
+}
+
+// DetectConflicts finds potential duplicate or contradictory observations.
+func (j *JSONLStorage) DetectConflicts(entityName string) ([]Conflict, error) {
+	graph, err := j.loadGraph()
+	if err != nil {
+		return nil, err
+	}
+
+	var conflicts []Conflict
+	for _, e := range graph.Entities {
+		if entityName != "" && e.Name != entityName {
+			continue
+		}
+		// Compare all observation pairs
+		for i := 0; i < len(e.Observations); i++ {
+			for k := i + 1; k < len(e.Observations); k++ {
+				if ct := detectConflictTypeJSONL(e.Observations[i], e.Observations[k]); ct != "" {
+					conflicts = append(conflicts, Conflict{
+						EntityName:   e.Name,
+						Observation1: e.Observations[i],
+						Observation2: e.Observations[k],
+						Type:         ct,
+					})
+				}
+			}
+		}
+	}
+	return conflicts, nil
+}
+
+// detectConflictTypeJSONL checks if two observations are potentially conflicting (JSONL version).
+func detectConflictTypeJSONL(a, b string) string {
+	aLower := strings.ToLower(a)
+	bLower := strings.ToLower(b)
+
+	// Check for high prefix overlap (potential duplicate)
+	aWords := strings.Fields(aLower)
+	bWords := strings.Fields(bLower)
+	if len(aWords) > 0 && len(bWords) > 0 {
+		common := 0
+		minLen := len(aWords)
+		if len(bWords) < minLen {
+			minLen = len(bWords)
+		}
+		for i := 0; i < minLen; i++ {
+			if aWords[i] == bWords[i] {
+				common++
+			} else {
+				break
+			}
+		}
+		if float64(common)/float64(minLen) > 0.6 && aLower != bLower {
+			return "potential_duplicate"
+		}
+	}
+
+	// Check for antonym keyword pairs
+	antonyms := [][2]string{
+		{"enabled", "disabled"}, {"true", "false"}, {"likes", "dislikes"},
+		{"prefers", "avoids"}, {"uses", "does not use"},
+		{"active", "inactive"}, {"yes", "no"}, {"always", "never"},
+	}
+	for _, pair := range antonyms {
+		aHas0 := strings.Contains(aLower, pair[0])
+		aHas1 := strings.Contains(aLower, pair[1])
+		bHas0 := strings.Contains(bLower, pair[0])
+		bHas1 := strings.Contains(bLower, pair[1])
+		if (aHas0 && bHas1 && !aHas1 && !bHas0) || (aHas1 && bHas0 && !aHas0 && !bHas1) {
+			commonWords := 0
+			for _, aw := range aWords {
+				if aw == pair[0] || aw == pair[1] {
+					continue
+				}
+				for _, bw := range bWords {
+					if aw == bw {
+						commonWords++
+						break
+					}
+				}
+			}
+			if commonWords >= 1 {
+				return "potential_contradiction"
+			}
+		}
+	}
+	return ""
+}
+
 // ExportData exports all data for migration
 func (j *JSONLStorage) ExportData() (*KnowledgeGraph, error) {
 	return j.loadGraph()

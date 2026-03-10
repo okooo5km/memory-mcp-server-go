@@ -10,7 +10,8 @@ import (
 
 // SQLiteStorage implements Storage interface using SQLite
 type SQLiteStorage struct {
-	db     *sql.DB
+	db     *sql.DB // write connection (single conn)
+	dbRead *sql.DB // read connection pool (multiple conns)
 	config Config
 }
 
@@ -50,9 +51,17 @@ func (s *SQLiteStorage) Initialize() error {
 		}
 	}
 
+	// Limit write connection to 1 (SQLite serializes writes anyway)
+	s.db.SetMaxOpenConns(1)
+
 	// Create schema
 	if err = s.createSchema(); err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
+	}
+
+	// Run schema migrations for new columns
+	if err = s.migrateSchema(); err != nil {
+		return fmt.Errorf("failed to migrate schema: %w", err)
 	}
 
 	// Try to create FTS schema (optional, will fallback to regular search if it fails)
@@ -61,6 +70,23 @@ func (s *SQLiteStorage) Initialize() error {
 		// Silently fallback - don't print to stdout in MCP mode
 		// FTS5 is optional, basic search will work fine
 	}
+
+	// Open a separate read connection pool to leverage WAL concurrency
+	s.dbRead, err = sql.Open("sqlite", s.config.FilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open read database: %w", err)
+	}
+	s.dbRead.SetMaxOpenConns(4) // Allow concurrent reads
+
+	// Configure read connection with same pragmas (minus WAL which is db-level)
+	if s.config.CacheSize > 0 {
+		s.dbRead.Exec(fmt.Sprintf("PRAGMA cache_size=%d", s.config.CacheSize))
+	}
+	if s.config.BusyTimeout > 0 {
+		s.dbRead.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", s.config.BusyTimeout.Milliseconds()))
+	}
+	// Mark read connections as query-only for safety
+	s.dbRead.Exec("PRAGMA query_only=ON")
 
 	return nil
 }
@@ -118,19 +144,98 @@ func (s *SQLiteStorage) createSchema() error {
 	return err
 }
 
-// Close closes the database connection
+// migrateSchema adds new columns to existing tables (idempotent)
+func (s *SQLiteStorage) migrateSchema() error {
+	// Each migration is a column addition that silently succeeds if column already exists
+	migrations := []string{
+		// Time awareness: track last access and access frequency for decay-based ranking
+		"ALTER TABLE entities ADD COLUMN last_accessed_at TIMESTAMP",
+		"ALTER TABLE entities ADD COLUMN access_count INTEGER DEFAULT 0",
+		// Observation metadata: source tracking, confidence scoring, tagging
+		"ALTER TABLE observations ADD COLUMN source TEXT DEFAULT ''",
+		"ALTER TABLE observations ADD COLUMN confidence REAL DEFAULT 1.0",
+		"ALTER TABLE observations ADD COLUMN tags TEXT DEFAULT '[]'",
+	}
+
+	for _, m := range migrations {
+		_, err := s.db.Exec(m)
+		if err != nil {
+			// Ignore "duplicate column" errors — column already exists
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("migration failed (%s): %w", m, err)
+			}
+		}
+	}
+
+	// Create synonyms table for query expansion
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS synonyms (
+		term TEXT PRIMARY KEY,
+		expanded TEXT NOT NULL
+	)`)
+
+	// Seed common tech synonyms
+	defaultSynonyms := [][2]string{
+		{"js", "javascript"}, {"ts", "typescript"}, {"py", "python"},
+		{"rb", "ruby"}, {"rs", "rust"}, {"kt", "kotlin"},
+		{"react", "reactjs"}, {"vue", "vuejs"}, {"ng", "angular"},
+		{"k8s", "kubernetes"}, {"tf", "terraform"}, {"gh", "github"},
+		{"db", "database"}, {"api", "interface"}, {"cli", "command"},
+		{"ui", "interface"}, {"ml", "machine learning"}, {"ai", "artificial intelligence"},
+	}
+	synonymStmt, _ := s.db.Prepare("INSERT OR IGNORE INTO synonyms (term, expanded) VALUES (?, ?)")
+	if synonymStmt != nil {
+		for _, syn := range defaultSynonyms {
+			synonymStmt.Exec(syn[0], syn[1])
+		}
+		synonymStmt.Close()
+	}
+
+	// Update schema version
+	_, _ = s.db.Exec("INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '3.0')")
+
+	return nil
+}
+
+// Close closes both read and write database connections
 func (s *SQLiteStorage) Close() error {
+	var errs []error
+	if s.dbRead != nil {
+		if err := s.dbRead.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if s.db != nil {
-		return s.db.Close()
+		if err := s.db.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errs[0]
 	}
 	return nil
 }
 
-// CreateEntities creates new entities in the database
+// rdb returns the read database connection, falling back to write connection
+// if the read pool is not initialized (e.g., during schema setup).
+func (s *SQLiteStorage) rdb() *sql.DB {
+	if s.dbRead != nil {
+		return s.dbRead
+	}
+	return s.db
+}
+
+// batchThreshold is the entity count above which bulk optimizations are applied
+const batchThreshold = 20
+
+// CreateEntities creates new entities in the database.
+// For large batches (>20 entities), FTS triggers are temporarily disabled
+// and the FTS index is rebuilt after insertion for better performance.
 func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	if len(entities) == 0 {
 		return []Entity{}, nil
 	}
+
+	useBulk := len(entities) > batchThreshold && s.isFTSAvailable()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -138,11 +243,17 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	}
 	defer tx.Rollback()
 
+	// For large batches, disable FTS triggers during insertion
+	if useBulk {
+		tx.Exec("DROP TRIGGER IF EXISTS entities_fts_insert")
+		tx.Exec("DROP TRIGGER IF EXISTS observations_fts_insert")
+	}
+
 	// Prepare statements
 	entityStmt, err := tx.Prepare(`
-		INSERT INTO entities (name, entity_type) 
-		VALUES (?, ?) 
-		ON CONFLICT(name) DO UPDATE SET 
+		INSERT INTO entities (name, entity_type)
+		VALUES (?, ?)
+		ON CONFLICT(name) DO UPDATE SET
 			entity_type = excluded.entity_type,
 			updated_at = CURRENT_TIMESTAMP
 		RETURNING id
@@ -153,8 +264,8 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	defer entityStmt.Close()
 
 	obsStmt, err := tx.Prepare(`
-		INSERT INTO observations (entity_id, content) 
-		VALUES (?, ?) 
+		INSERT INTO observations (entity_id, content)
+		VALUES (?, ?)
 		ON CONFLICT(entity_id, content) DO NOTHING
 	`)
 	if err != nil {
@@ -184,6 +295,12 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Rebuild FTS index after bulk insertion
+	if useBulk {
+		s.createFTSSchema() // re-create triggers
+		s.rebuildFTSIndex() // populate FTS with new data
 	}
 
 	return created, nil
@@ -396,19 +513,19 @@ func (s *SQLiteStorage) readGraphSummary(limit int) (*GraphSummary, error) {
 	}
 
 	// Get total entity count
-	err := s.db.QueryRow("SELECT COUNT(*) FROM entities").Scan(&summary.TotalEntities)
+	err := s.rdb().QueryRow("SELECT COUNT(*) FROM entities").Scan(&summary.TotalEntities)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count entities: %w", err)
 	}
 
 	// Get total relation count
-	err = s.db.QueryRow("SELECT COUNT(*) FROM relations").Scan(&summary.TotalRelations)
+	err = s.rdb().QueryRow("SELECT COUNT(*) FROM relations").Scan(&summary.TotalRelations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count relations: %w", err)
 	}
 
 	// Get entity type distribution
-	rows, err := s.db.Query("SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type ORDER BY COUNT(*) DESC")
+	rows, err := s.rdb().Query("SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type ORDER BY COUNT(*) DESC")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query entity types: %w", err)
 	}
@@ -424,7 +541,7 @@ func (s *SQLiteStorage) readGraphSummary(limit int) (*GraphSummary, error) {
 	}
 
 	// Get relation type distribution
-	rows, err = s.db.Query("SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC")
+	rows, err = s.rdb().Query("SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query relation types: %w", err)
 	}
@@ -440,7 +557,7 @@ func (s *SQLiteStorage) readGraphSummary(limit int) (*GraphSummary, error) {
 	}
 
 	// Get entity list (limited)
-	rows, err = s.db.Query(`
+	rows, err = s.rdb().Query(`
 		SELECT name, entity_type 
 		FROM entities 
 		ORDER BY created_at DESC 
@@ -479,8 +596,8 @@ func (s *SQLiteStorage) readGraphFull() (*KnowledgeGraph, error) {
 	}
 
 	// Load entities with observations
-	rows, err := s.db.Query(`
-		SELECT e.name, e.entity_type, 
+	rows, err := s.rdb().Query(`
+		SELECT e.name, e.entity_type,
 		       GROUP_CONCAT(o.content, '|||') as observations
 		FROM entities e
 		LEFT JOIN observations o ON e.id = o.entity_id
@@ -518,7 +635,7 @@ func (s *SQLiteStorage) readGraphFull() (*KnowledgeGraph, error) {
 	}
 
 	// Load relations
-	rows, err = s.db.Query(`
+	rows, err = s.rdb().Query(`
 		SELECT f.name, t.name, r.relation_type
 		FROM relations r
 		JOIN entities f ON r.from_entity_id = f.id
@@ -569,7 +686,7 @@ func (s *SQLiteStorage) SearchNodes(query string, limit int) (*SearchResult, err
 // isFTSAvailable checks if FTS5 tables are available
 func (s *SQLiteStorage) isFTSAvailable() bool {
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entities_fts'").Scan(&count)
+	err := s.rdb().QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='entities_fts'").Scan(&count)
 	return err == nil && count > 0
 }
 
@@ -595,11 +712,12 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 		return result, nil
 	}
 
-	// Split query into words for OR search
+	// Split query into words for OR search and expand with synonyms
 	words := strings.Fields(query)
 	if len(words) == 0 {
 		return result, nil
 	}
+	words = s.expandQueryWithSynonyms(words)
 
 	// Build dynamic WHERE clause for multi-word OR search
 	var whereClauses []string
@@ -621,7 +739,7 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 		WHERE %s
 	`, whereClause)
 
-	err := s.db.QueryRow(countQuery, countArgs...).Scan(&result.Total)
+	err := s.rdb().QueryRow(countQuery, countArgs...).Scan(&result.Total)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count search results: %w", err)
 	}
@@ -656,31 +774,40 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 	}
 
 	// Get matched entity IDs with priority sorting
+	// Time-decay ranking: boost recently accessed entities
+	// final_score = priority * (1.0 / (1.0 + 0.01 * days_since_access)) * log2(2 + access_count)
+	decayExpr := `(
+		CAST(%s AS REAL)
+		* (1.0 / (1.0 + 0.01 * MAX(0, COALESCE(julianday('now') - julianday(COALESCE(e.last_accessed_at, e.updated_at, e.created_at)), 0))))
+		* (1.0 + log(2.0 + COALESCE(e.access_count, 0)) / log(2.0))
+	)`
+	rankExpr := fmt.Sprintf(decayExpr, priorityExpr)
+
 	var searchQuery string
 	if limit > 0 {
 		searchQuery = fmt.Sprintf(`
-			SELECT e.id, e.name, e.entity_type, %s AS priority
+			SELECT e.id, e.name, e.entity_type, %s AS score
 			FROM entities e
 			LEFT JOIN observations o ON e.id = o.entity_id
 			WHERE %s
 			GROUP BY e.id, e.name, e.entity_type
-			ORDER BY priority DESC, e.created_at DESC
+			ORDER BY score DESC, e.created_at DESC
 			LIMIT ?
-		`, priorityExpr, whereClause)
+		`, rankExpr, whereClause)
 		searchArgs = append(searchArgs, limit)
 	} else {
 		// No limit - return all results
 		searchQuery = fmt.Sprintf(`
-			SELECT e.id, e.name, e.entity_type, %s AS priority
+			SELECT e.id, e.name, e.entity_type, %s AS score
 			FROM entities e
 			LEFT JOIN observations o ON e.id = o.entity_id
 			WHERE %s
 			GROUP BY e.id, e.name, e.entity_type
-			ORDER BY priority DESC, e.created_at DESC
-		`, priorityExpr, whereClause)
+			ORDER BY score DESC, e.created_at DESC
+		`, rankExpr, whereClause)
 	}
 
-	rows, err := s.db.Query(searchQuery, searchArgs...)
+	rows, err := s.rdb().Query(searchQuery, searchArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search entities: %w", err)
 	}
@@ -692,8 +819,8 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 	for rows.Next() {
 		var id int64
 		var name, entityType string
-		var priority int
-		if err := rows.Scan(&id, &name, &entityType, &priority); err != nil {
+		var score float64
+		if err := rows.Scan(&id, &name, &entityType, &score); err != nil {
 			return nil, fmt.Errorf("failed to scan search result: %w", err)
 		}
 		entityIDs = append(entityIDs, id)
@@ -726,7 +853,7 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 			WHERE entity_id IN (%s) 
 			GROUP BY entity_id
 		`, placeholderStr)
-		obsRows, err := s.db.Query(obsCountQuery, idArgs...)
+		obsRows, err := s.rdb().Query(obsCountQuery, idArgs...)
 		if err == nil {
 			defer obsRows.Close()
 			for obsRows.Next() {
@@ -748,7 +875,7 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 			WHERE e.id IN (%s)
 			GROUP BY e.id
 		`, placeholderStr)
-		relRows, err := s.db.Query(relCountQuery, idArgs...)
+		relRows, err := s.rdb().Query(relCountQuery, idArgs...)
 		if err == nil {
 			defer relRows.Close()
 			for relRows.Next() {
@@ -780,6 +907,12 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 		result.Entities = append(result.Entities, *entityMap[id])
 	}
 
+	// Update access stats for matched entities
+	s.updateAccessStats(entityIDs)
+
+	// Graph traversal: find 1-hop related entities
+	result.RelatedEntities = s.findRelatedEntities(entityIDs, entityMap)
+
 	// HasMore is only true when limit is specified and there are more results
 	if limit > 0 {
 		result.HasMore = result.Total > limit
@@ -788,6 +921,84 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 	}
 
 	return result, nil
+}
+
+// findRelatedEntities performs 1-hop graph traversal from matched entities to find related context.
+// Returns up to 10 related entities that are not already in the direct match results.
+func (s *SQLiteStorage) findRelatedEntities(entityIDs []int64, directHits map[int64]*EntitySearchHit) []RelatedHit {
+	if len(entityIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(entityIDs))
+	args := make([]interface{}, len(entityIDs))
+	for i, id := range entityIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	placeholderStr := strings.Join(placeholders, ",")
+
+	// Find outgoing relations: matched entity -> related entity
+	// Find incoming relations: related entity -> matched entity
+	// Exclude entities already in direct hits
+	query := fmt.Sprintf(`
+		SELECT DISTINCT
+			e.id, e.name, e.entity_type, r.relation_type,
+			matched.name AS related_to,
+			CASE WHEN r.from_entity_id IN (%s) THEN 'outgoing' ELSE 'incoming' END AS direction
+		FROM relations r
+		JOIN entities e ON (
+			CASE WHEN r.from_entity_id IN (%s)
+				THEN e.id = r.to_entity_id
+				ELSE e.id = r.from_entity_id
+			END
+		)
+		JOIN entities matched ON (
+			CASE WHEN r.from_entity_id IN (%s)
+				THEN matched.id = r.from_entity_id
+				ELSE matched.id = r.to_entity_id
+			END
+		)
+		WHERE (r.from_entity_id IN (%s) OR r.to_entity_id IN (%s))
+		  AND e.id NOT IN (%s)
+		LIMIT 10
+	`, placeholderStr, placeholderStr, placeholderStr, placeholderStr, placeholderStr, placeholderStr)
+
+	// 6 uses of args
+	allArgs := make([]interface{}, 0, len(args)*6)
+	for i := 0; i < 6; i++ {
+		allArgs = append(allArgs, args...)
+	}
+
+	rows, err := s.rdb().Query(query, allArgs...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var related []RelatedHit
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var id int64
+		var name, entityType, relationType, relatedTo, direction string
+		if err := rows.Scan(&id, &name, &entityType, &relationType, &relatedTo, &direction); err != nil {
+			continue
+		}
+		// Deduplicate by name
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		related = append(related, RelatedHit{
+			Name:         name,
+			EntityType:   entityType,
+			RelationType: relationType,
+			RelatedTo:    relatedTo,
+			Direction:    direction,
+		})
+	}
+
+	return related
 }
 
 // getMatchedSnippets returns context snippets around matched keywords
@@ -806,11 +1017,11 @@ func (s *SQLiteStorage) getMatchedSnippets(entityID int64, words []string, maxSn
 	}
 
 	query := fmt.Sprintf(`
-		SELECT content FROM observations 
+		SELECT content FROM observations
 		WHERE entity_id = ? AND (%s)
 	`, strings.Join(whereClauses, " OR "))
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.rdb().Query(query, args...)
 	if err != nil {
 		return snippets
 	}
@@ -830,7 +1041,7 @@ func (s *SQLiteStorage) getMatchedSnippets(entityID int64, words []string, maxSn
 
 	// If no matched observations, get first 2 observations as fallback
 	if len(snippets) == 0 {
-		fallbackRows, err := s.db.Query(
+		fallbackRows, err := s.rdb().Query(
 			"SELECT content FROM observations WHERE entity_id = ? LIMIT ?",
 			entityID, 2,
 		)
@@ -935,7 +1146,7 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 		ORDER BY e.created_at
 	`, strings.Join(placeholders, ","))
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.rdb().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query entities: %w", err)
 	}
@@ -971,10 +1182,10 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 
 		// Get total count first
 		var totalObs int
-		s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE entity_id = ?", id).Scan(&totalObs)
+		s.rdb().QueryRow("SELECT COUNT(*) FROM observations WHERE entity_id = ?", id).Scan(&totalObs)
 
 		// Get observations with limit
-		obsRows, err := s.db.Query(
+		obsRows, err := s.rdb().Query(
 			"SELECT content FROM observations WHERE entity_id = ? LIMIT ?",
 			id, maxObservationsPerEntity,
 		)
@@ -1002,6 +1213,9 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 
 	graph.Truncated = truncated
 
+	// Update access stats asynchronously
+	s.updateAccessStats(entityIDs)
+
 	// Load relations for found entities
 	if len(entityIDs) > 0 {
 		placeholders := make([]string, len(entityIDs))
@@ -1023,7 +1237,7 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 		// Duplicate args for both IN clauses
 		relArgs := append(args, args...)
 
-		rows, err := s.db.Query(relQuery, relArgs...)
+		rows, err := s.rdb().Query(relQuery, relArgs...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query relations: %w", err)
 		}
@@ -1048,6 +1262,263 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 	}
 
 	return graph, nil
+}
+
+// updateAccessStats updates last_accessed_at and access_count for the given entity IDs.
+// Runs asynchronously to avoid blocking read operations.
+func (s *SQLiteStorage) updateAccessStats(entityIDs []int64) {
+	if len(entityIDs) == 0 {
+		return
+	}
+
+	go func() {
+		placeholders := make([]string, len(entityIDs))
+		args := make([]interface{}, len(entityIDs))
+		for i, id := range entityIDs {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(`
+			UPDATE entities
+			SET last_accessed_at = CURRENT_TIMESTAMP,
+			    access_count = COALESCE(access_count, 0) + 1
+			WHERE id IN (%s)
+		`, strings.Join(placeholders, ","))
+		s.db.Exec(query, args...)
+	}()
+}
+
+// MergeEntities merges source entity into target: migrates observations and relations, then deletes source.
+func (s *SQLiteStorage) MergeEntities(sourceName, targetName string) (*MergeResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Get source and target entity IDs
+	var sourceID, targetID int64
+	err = tx.QueryRow("SELECT id FROM entities WHERE name = ?", sourceName).Scan(&sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("source entity %q not found: %w", sourceName, err)
+	}
+	err = tx.QueryRow("SELECT id FROM entities WHERE name = ?", targetName).Scan(&targetID)
+	if err != nil {
+		return nil, fmt.Errorf("target entity %q not found: %w", targetName, err)
+	}
+
+	// Migrate observations (skip duplicates)
+	obsResult, err := tx.Exec(`
+		INSERT INTO observations (entity_id, content)
+		SELECT ?, content FROM observations WHERE entity_id = ?
+		ON CONFLICT(entity_id, content) DO NOTHING
+	`, targetID, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to migrate observations: %w", err)
+	}
+	mergedObs, _ := obsResult.RowsAffected()
+
+	// Redirect outgoing relations from source to target
+	outResult, err := tx.Exec(`
+		UPDATE relations SET from_entity_id = ?
+		WHERE from_entity_id = ?
+		AND NOT EXISTS (
+			SELECT 1 FROM relations r2
+			WHERE r2.from_entity_id = ? AND r2.to_entity_id = relations.to_entity_id
+			AND r2.relation_type = relations.relation_type
+		)
+	`, targetID, sourceID, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to redirect outgoing relations: %w", err)
+	}
+	mergedOut, _ := outResult.RowsAffected()
+
+	// Redirect incoming relations to target
+	inResult, err := tx.Exec(`
+		UPDATE relations SET to_entity_id = ?
+		WHERE to_entity_id = ?
+		AND NOT EXISTS (
+			SELECT 1 FROM relations r2
+			WHERE r2.from_entity_id = relations.from_entity_id AND r2.to_entity_id = ?
+			AND r2.relation_type = relations.relation_type
+		)
+	`, targetID, sourceID, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to redirect incoming relations: %w", err)
+	}
+	mergedIn, _ := inResult.RowsAffected()
+
+	// Delete source entity (cascades observations and remaining duplicate relations)
+	_, err = tx.Exec("DELETE FROM entities WHERE id = ?", sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete source entity: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit merge: %w", err)
+	}
+
+	return &MergeResult{
+		MergedObservations: int(mergedObs),
+		MergedRelations:    int(mergedOut + mergedIn),
+		SourceDeleted:      true,
+	}, nil
+}
+
+// UpdateEntityType updates the entity type for a given entity name.
+func (s *SQLiteStorage) UpdateEntityType(name string, newType string) error {
+	result, err := s.db.Exec(
+		"UPDATE entities SET entity_type = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+		newType, name,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update entity type: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("entity %q not found", name)
+	}
+	return nil
+}
+
+// UpdateObservation replaces an observation's content for a given entity.
+func (s *SQLiteStorage) UpdateObservation(entityName string, oldContent string, newContent string) error {
+	result, err := s.db.Exec(`
+		UPDATE observations SET content = ?
+		WHERE entity_id = (SELECT id FROM entities WHERE name = ?)
+		AND content = ?
+	`, newContent, entityName, oldContent)
+	if err != nil {
+		return fmt.Errorf("failed to update observation: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("observation not found for entity %q", entityName)
+	}
+	return nil
+}
+
+// DetectConflicts finds potential duplicate or contradictory observations within an entity.
+// If entityName is empty, checks all entities.
+func (s *SQLiteStorage) DetectConflicts(entityName string) ([]Conflict, error) {
+	var conflicts []Conflict
+
+	// Build query to compare observation pairs within the same entity
+	query := `
+		SELECT e.name, o1.content, o2.content
+		FROM observations o1
+		JOIN observations o2 ON o1.entity_id = o2.entity_id AND o1.id < o2.id
+		JOIN entities e ON e.id = o1.entity_id
+	`
+	var args []interface{}
+	if entityName != "" {
+		query += " WHERE e.name = ?"
+		args = append(args, entityName)
+	}
+	query += " ORDER BY e.name, o1.id"
+
+	rows, err := s.rdb().Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query observations: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, content1, content2 string
+		if err := rows.Scan(&name, &content1, &content2); err != nil {
+			continue
+		}
+
+		if conflictType := detectConflictType(content1, content2); conflictType != "" {
+			conflicts = append(conflicts, Conflict{
+				EntityName:   name,
+				Observation1: content1,
+				Observation2: content2,
+				Type:         conflictType,
+			})
+		}
+	}
+
+	return conflicts, nil
+}
+
+// detectConflictType checks if two observations are potentially conflicting.
+// Returns conflict type string or empty if no conflict detected.
+func detectConflictType(a, b string) string {
+	aLower := strings.ToLower(a)
+	bLower := strings.ToLower(b)
+
+	// Check for high prefix overlap (potential duplicate)
+	if prefixOverlap(aLower, bLower) > 0.6 && aLower != bLower {
+		return "potential_duplicate"
+	}
+
+	// Check for antonym keyword pairs (potential contradiction)
+	antonyms := [][2]string{
+		{"enabled", "disabled"},
+		{"true", "false"},
+		{"likes", "dislikes"},
+		{"prefers", "avoids"},
+		{"uses", "does not use"},
+		{"active", "inactive"},
+		{"yes", "no"},
+		{"always", "never"},
+		{"supports", "does not support"},
+	}
+
+	for _, pair := range antonyms {
+		aHas0 := strings.Contains(aLower, pair[0])
+		aHas1 := strings.Contains(aLower, pair[1])
+		bHas0 := strings.Contains(bLower, pair[0])
+		bHas1 := strings.Contains(bLower, pair[1])
+
+		// One has the positive term, other has the negative (but not both containing both)
+		if (aHas0 && bHas1 && !aHas1 && !bHas0) || (aHas1 && bHas0 && !aHas0 && !bHas1) {
+			// Only flag if observations share enough context (at least one common word beyond the antonym)
+			aWords := strings.Fields(aLower)
+			bWords := strings.Fields(bLower)
+			commonWords := 0
+			for _, aw := range aWords {
+				if aw == pair[0] || aw == pair[1] {
+					continue
+				}
+				for _, bw := range bWords {
+					if aw == bw {
+						commonWords++
+						break
+					}
+				}
+			}
+			if commonWords >= 1 {
+				return "potential_contradiction"
+			}
+		}
+	}
+
+	return ""
+}
+
+// prefixOverlap calculates the ratio of common prefix length to the shorter string length.
+func prefixOverlap(a, b string) float64 {
+	aWords := strings.Fields(a)
+	bWords := strings.Fields(b)
+	if len(aWords) == 0 || len(bWords) == 0 {
+		return 0
+	}
+
+	common := 0
+	minLen := len(aWords)
+	if len(bWords) < minLen {
+		minLen = len(bWords)
+	}
+	for i := 0; i < minLen; i++ {
+		if aWords[i] == bWords[i] {
+			common++
+		} else {
+			break
+		}
+	}
+	return float64(common) / float64(minLen)
 }
 
 // ExportData exports all data for migration
