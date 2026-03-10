@@ -79,6 +79,21 @@ type GraphSummary struct {
 	HasMore  bool            `json:"hasMore"`
 }
 
+// MergeResult holds the result of merging two entities
+type MergeResult struct {
+	MergedObservations int  `json:"mergedObservations"` // observations migrated to target
+	MergedRelations    int  `json:"mergedRelations"`    // relations redirected to target
+	SourceDeleted      bool `json:"sourceDeleted"`      // whether source entity was removed
+}
+
+// Conflict represents a potential contradiction between two observations
+type Conflict struct {
+	EntityName   string `json:"entityName"`
+	Observation1 string `json:"observation1"`
+	Observation2 string `json:"observation2"`
+	Type         string `json:"type"` // "potential_duplicate" or "potential_contradiction"
+}
+
 // Storage defines the interface for knowledge graph persistence
 type Storage interface {
 	// Initialize sets up the storage backend
@@ -103,6 +118,14 @@ type Storage interface {
 	ReadGraph(mode string, limit int) (interface{}, error) // mode: "summary" or "full"
 	SearchNodes(query string, limit int) (*SearchResult, error)
 	OpenNodes(names []string) (*KnowledgeGraph, error)
+
+	// Entity management operations
+	MergeEntities(sourceName, targetName string) (*MergeResult, error)
+	UpdateEntityType(name string, newType string) error
+	UpdateObservation(entityName string, oldContent string, newContent string) error
+
+	// Conflict detection
+	DetectConflicts(entityName string) ([]Conflict, error)
 
 	// Migration support
 	ExportData() (*KnowledgeGraph, error)

@@ -271,6 +271,22 @@ func (m *KnowledgeGraphManager) OpenNodes(names []string) (storage.KnowledgeGrap
 	return *graph, nil
 }
 
+func (m *KnowledgeGraphManager) MergeEntities(sourceName, targetName string) (*storage.MergeResult, error) {
+	return m.storage.MergeEntities(sourceName, targetName)
+}
+
+func (m *KnowledgeGraphManager) UpdateEntityType(name string, newType string) error {
+	return m.storage.UpdateEntityType(name, newType)
+}
+
+func (m *KnowledgeGraphManager) UpdateObservation(entityName string, oldContent string, newContent string) error {
+	return m.storage.UpdateObservation(entityName, oldContent, newContent)
+}
+
+func (m *KnowledgeGraphManager) DetectConflicts(entityName string) ([]storage.Conflict, error) {
+	return m.storage.DetectConflicts(entityName)
+}
+
 // Version information
 var (
 	// version can be overridden by -ldflags "-X main.version=..."
@@ -918,6 +934,90 @@ RETURNS: Complete entities with all observations, plus all relations connected t
 		),
 	)
 
+	// Add merge_entities tool
+	mergeEntitiesTool := mcp.NewTool("merge_entities",
+		mcp.WithDescription(`Merge two entities into one. All observations and relations from the source entity are migrated to the target entity, then the source is deleted.
+
+USE WHEN: You discover duplicate entities (e.g. "React.js" and "React" refer to the same thing).
+
+BEHAVIOR:
+- Source observations are added to target (duplicates skipped)
+- Source relations are redirected to target (duplicates skipped)
+- Source entity is deleted after migration
+
+EXAMPLE: sourceName: "React.js", targetName: "React" → merges React.js into React`),
+		mcp.WithTitleAnnotation("Merge Entities"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("sourceName",
+			mcp.Required(),
+			mcp.Description("Entity to merge FROM (will be deleted)"),
+		),
+		mcp.WithString("targetName",
+			mcp.Required(),
+			mcp.Description("Entity to merge INTO (will receive observations and relations)"),
+		),
+	)
+
+	// Add update_entities tool
+	updateEntitiesTool := mcp.NewTool("update_entities",
+		mcp.WithDescription(`Update the type of an existing entity.
+
+USE WHEN: An entity was created with the wrong type and needs correction.
+
+EXAMPLE: name: "React", entityType: "framework" (was previously "library")`),
+		mcp.WithTitleAnnotation("Update Entity Type"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("Exact name of the entity to update"),
+		),
+		mcp.WithString("entityType",
+			mcp.Required(),
+			mcp.Description("New entity type to set"),
+		),
+	)
+
+	// Add update_observations tool
+	updateObservationsTool := mcp.NewTool("update_observations",
+		mcp.WithDescription(`Replace an existing observation with updated content. Use this to correct outdated or inaccurate facts.
+
+USE WHEN: An observation needs correction (e.g. "Uses React 17" → "Uses React 18").
+
+REQUIRES: The exact old observation text. Use open_nodes first to get the current text.`),
+		mcp.WithTitleAnnotation("Update Observation"),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithString("entityName",
+			mcp.Required(),
+			mcp.Description("Exact name of the entity containing the observation"),
+		),
+		mcp.WithString("oldContent",
+			mcp.Required(),
+			mcp.Description("Exact current observation text to replace"),
+		),
+		mcp.WithString("newContent",
+			mcp.Required(),
+			mcp.Description("New observation text"),
+		),
+	)
+
+	// Add detect_conflicts tool
+	detectConflictsTool := mcp.NewTool("detect_conflicts",
+		mcp.WithDescription(`Detect potential duplicate or contradictory observations within entities.
+
+Analyzes observation pairs for:
+- Potential duplicates: observations with high prefix overlap (>60% of words match at start)
+- Potential contradictions: observations containing antonym keyword pairs (e.g. "likes X" vs "dislikes X")
+
+USE WHEN: Reviewing memory quality, or after bulk imports to find inconsistencies.
+
+RETURNS: List of conflicts with entity name, both observations, and conflict type.`),
+		mcp.WithTitleAnnotation("Detect Conflicts"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("entityName",
+			mcp.Description("Optional: check only this entity. Omit to check all entities."),
+		),
+	)
+
 	// Add handlers
 	s.AddTool(createEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Bind arguments using new mcp-go helpers
@@ -1157,6 +1257,96 @@ RETURNS: Complete entities with all observations, plus all relations connected t
 			return nil, err
 		}
 
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
+
+	s.AddTool(mergeEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var arg struct {
+			SourceName string `json:"sourceName"`
+			TargetName string `json:"targetName"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if arg.SourceName == "" || arg.TargetName == "" {
+			return nil, errors.New("missing required parameters: sourceName and targetName")
+		}
+
+		result, err := manager.MergeEntities(arg.SourceName, arg.TargetName)
+		if err != nil {
+			return nil, err
+		}
+
+		resultJSON, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
+
+	s.AddTool(updateEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var arg struct {
+			Name       string `json:"name"`
+			EntityType string `json:"entityType"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if arg.Name == "" || arg.EntityType == "" {
+			return nil, errors.New("missing required parameters: name and entityType")
+		}
+
+		if err := manager.UpdateEntityType(arg.Name, arg.EntityType); err != nil {
+			return nil, err
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("Entity %q type updated to %q", arg.Name, arg.EntityType)), nil
+	})
+
+	s.AddTool(updateObservationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var arg struct {
+			EntityName string `json:"entityName"`
+			OldContent string `json:"oldContent"`
+			NewContent string `json:"newContent"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if arg.EntityName == "" || arg.OldContent == "" || arg.NewContent == "" {
+			return nil, errors.New("missing required parameters: entityName, oldContent, and newContent")
+		}
+
+		if err := manager.UpdateObservation(arg.EntityName, arg.OldContent, arg.NewContent); err != nil {
+			return nil, err
+		}
+		return mcp.NewToolResultText("Observation updated successfully"), nil
+	})
+
+	s.AddTool(detectConflictsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var arg struct {
+			EntityName *string `json:"entityName"`
+		}
+		if err := request.BindArguments(&arg); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+
+		entityName := ""
+		if arg.EntityName != nil {
+			entityName = *arg.EntityName
+		}
+
+		conflicts, err := manager.DetectConflicts(entityName)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(conflicts) == 0 {
+			return mcp.NewToolResultText("No conflicts detected"), nil
+		}
+
+		resultJSON, err := json.MarshalIndent(conflicts, "", "  ")
+		if err != nil {
+			return nil, err
+		}
 		return mcp.NewToolResultText(string(resultJSON)), nil
 	})
 
