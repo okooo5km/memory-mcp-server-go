@@ -55,6 +55,11 @@ func (s *SQLiteStorage) Initialize() error {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
 
+	// Run schema migrations for new columns
+	if err = s.migrateSchema(); err != nil {
+		return fmt.Errorf("failed to migrate schema: %w", err)
+	}
+
 	// Try to create FTS schema (optional, will fallback to regular search if it fails)
 	if err = s.createFTSSchema(); err != nil {
 		// Log warning but don't fail initialization
@@ -118,6 +123,35 @@ func (s *SQLiteStorage) createSchema() error {
 	return err
 }
 
+// migrateSchema adds new columns to existing tables (idempotent)
+func (s *SQLiteStorage) migrateSchema() error {
+	// Each migration is a column addition that silently succeeds if column already exists
+	migrations := []string{
+		// Time awareness: track last access and access frequency for decay-based ranking
+		"ALTER TABLE entities ADD COLUMN last_accessed_at TIMESTAMP",
+		"ALTER TABLE entities ADD COLUMN access_count INTEGER DEFAULT 0",
+		// Observation metadata: source tracking, confidence scoring, tagging
+		"ALTER TABLE observations ADD COLUMN source TEXT DEFAULT ''",
+		"ALTER TABLE observations ADD COLUMN confidence REAL DEFAULT 1.0",
+		"ALTER TABLE observations ADD COLUMN tags TEXT DEFAULT '[]'",
+	}
+
+	for _, m := range migrations {
+		_, err := s.db.Exec(m)
+		if err != nil {
+			// Ignore "duplicate column" errors — column already exists
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("migration failed (%s): %w", m, err)
+			}
+		}
+	}
+
+	// Update schema version
+	_, _ = s.db.Exec("INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '2.0')")
+
+	return nil
+}
+
 // Close closes the database connection
 func (s *SQLiteStorage) Close() error {
 	if s.db != nil {
@@ -126,11 +160,18 @@ func (s *SQLiteStorage) Close() error {
 	return nil
 }
 
-// CreateEntities creates new entities in the database
+// batchThreshold is the entity count above which bulk optimizations are applied
+const batchThreshold = 20
+
+// CreateEntities creates new entities in the database.
+// For large batches (>20 entities), FTS triggers are temporarily disabled
+// and the FTS index is rebuilt after insertion for better performance.
 func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	if len(entities) == 0 {
 		return []Entity{}, nil
 	}
+
+	useBulk := len(entities) > batchThreshold && s.isFTSAvailable()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -138,11 +179,17 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	}
 	defer tx.Rollback()
 
+	// For large batches, disable FTS triggers during insertion
+	if useBulk {
+		tx.Exec("DROP TRIGGER IF EXISTS entities_fts_insert")
+		tx.Exec("DROP TRIGGER IF EXISTS observations_fts_insert")
+	}
+
 	// Prepare statements
 	entityStmt, err := tx.Prepare(`
-		INSERT INTO entities (name, entity_type) 
-		VALUES (?, ?) 
-		ON CONFLICT(name) DO UPDATE SET 
+		INSERT INTO entities (name, entity_type)
+		VALUES (?, ?)
+		ON CONFLICT(name) DO UPDATE SET
 			entity_type = excluded.entity_type,
 			updated_at = CURRENT_TIMESTAMP
 		RETURNING id
@@ -153,8 +200,8 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	defer entityStmt.Close()
 
 	obsStmt, err := tx.Prepare(`
-		INSERT INTO observations (entity_id, content) 
-		VALUES (?, ?) 
+		INSERT INTO observations (entity_id, content)
+		VALUES (?, ?)
 		ON CONFLICT(entity_id, content) DO NOTHING
 	`)
 	if err != nil {
@@ -184,6 +231,12 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Rebuild FTS index after bulk insertion
+	if useBulk {
+		s.createFTSSchema() // re-create triggers
+		s.rebuildFTSIndex() // populate FTS with new data
 	}
 
 	return created, nil
@@ -656,28 +709,37 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 	}
 
 	// Get matched entity IDs with priority sorting
+	// Time-decay ranking: boost recently accessed entities
+	// final_score = priority * (1.0 / (1.0 + 0.01 * days_since_access)) * log2(2 + access_count)
+	decayExpr := `(
+		CAST(%s AS REAL)
+		* (1.0 / (1.0 + 0.01 * MAX(0, COALESCE(julianday('now') - julianday(COALESCE(e.last_accessed_at, e.updated_at, e.created_at)), 0))))
+		* (1.0 + log(2.0 + COALESCE(e.access_count, 0)) / log(2.0))
+	)`
+	rankExpr := fmt.Sprintf(decayExpr, priorityExpr)
+
 	var searchQuery string
 	if limit > 0 {
 		searchQuery = fmt.Sprintf(`
-			SELECT e.id, e.name, e.entity_type, %s AS priority
+			SELECT e.id, e.name, e.entity_type, %s AS score
 			FROM entities e
 			LEFT JOIN observations o ON e.id = o.entity_id
 			WHERE %s
 			GROUP BY e.id, e.name, e.entity_type
-			ORDER BY priority DESC, e.created_at DESC
+			ORDER BY score DESC, e.created_at DESC
 			LIMIT ?
-		`, priorityExpr, whereClause)
+		`, rankExpr, whereClause)
 		searchArgs = append(searchArgs, limit)
 	} else {
 		// No limit - return all results
 		searchQuery = fmt.Sprintf(`
-			SELECT e.id, e.name, e.entity_type, %s AS priority
+			SELECT e.id, e.name, e.entity_type, %s AS score
 			FROM entities e
 			LEFT JOIN observations o ON e.id = o.entity_id
 			WHERE %s
 			GROUP BY e.id, e.name, e.entity_type
-			ORDER BY priority DESC, e.created_at DESC
-		`, priorityExpr, whereClause)
+			ORDER BY score DESC, e.created_at DESC
+		`, rankExpr, whereClause)
 	}
 
 	rows, err := s.db.Query(searchQuery, searchArgs...)
@@ -692,8 +754,8 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 	for rows.Next() {
 		var id int64
 		var name, entityType string
-		var priority int
-		if err := rows.Scan(&id, &name, &entityType, &priority); err != nil {
+		var score float64
+		if err := rows.Scan(&id, &name, &entityType, &score); err != nil {
 			return nil, fmt.Errorf("failed to scan search result: %w", err)
 		}
 		entityIDs = append(entityIDs, id)
@@ -780,6 +842,12 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 		result.Entities = append(result.Entities, *entityMap[id])
 	}
 
+	// Update access stats for matched entities
+	s.updateAccessStats(entityIDs)
+
+	// Graph traversal: find 1-hop related entities
+	result.RelatedEntities = s.findRelatedEntities(entityIDs, entityMap)
+
 	// HasMore is only true when limit is specified and there are more results
 	if limit > 0 {
 		result.HasMore = result.Total > limit
@@ -788,6 +856,84 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 	}
 
 	return result, nil
+}
+
+// findRelatedEntities performs 1-hop graph traversal from matched entities to find related context.
+// Returns up to 10 related entities that are not already in the direct match results.
+func (s *SQLiteStorage) findRelatedEntities(entityIDs []int64, directHits map[int64]*EntitySearchHit) []RelatedHit {
+	if len(entityIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(entityIDs))
+	args := make([]interface{}, len(entityIDs))
+	for i, id := range entityIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	placeholderStr := strings.Join(placeholders, ",")
+
+	// Find outgoing relations: matched entity -> related entity
+	// Find incoming relations: related entity -> matched entity
+	// Exclude entities already in direct hits
+	query := fmt.Sprintf(`
+		SELECT DISTINCT
+			e.id, e.name, e.entity_type, r.relation_type,
+			matched.name AS related_to,
+			CASE WHEN r.from_entity_id IN (%s) THEN 'outgoing' ELSE 'incoming' END AS direction
+		FROM relations r
+		JOIN entities e ON (
+			CASE WHEN r.from_entity_id IN (%s)
+				THEN e.id = r.to_entity_id
+				ELSE e.id = r.from_entity_id
+			END
+		)
+		JOIN entities matched ON (
+			CASE WHEN r.from_entity_id IN (%s)
+				THEN matched.id = r.from_entity_id
+				ELSE matched.id = r.to_entity_id
+			END
+		)
+		WHERE (r.from_entity_id IN (%s) OR r.to_entity_id IN (%s))
+		  AND e.id NOT IN (%s)
+		LIMIT 10
+	`, placeholderStr, placeholderStr, placeholderStr, placeholderStr, placeholderStr, placeholderStr)
+
+	// 6 uses of args
+	allArgs := make([]interface{}, 0, len(args)*6)
+	for i := 0; i < 6; i++ {
+		allArgs = append(allArgs, args...)
+	}
+
+	rows, err := s.db.Query(query, allArgs...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var related []RelatedHit
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var id int64
+		var name, entityType, relationType, relatedTo, direction string
+		if err := rows.Scan(&id, &name, &entityType, &relationType, &relatedTo, &direction); err != nil {
+			continue
+		}
+		// Deduplicate by name
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		related = append(related, RelatedHit{
+			Name:         name,
+			EntityType:   entityType,
+			RelationType: relationType,
+			RelatedTo:    relatedTo,
+			Direction:    direction,
+		})
+	}
+
+	return related
 }
 
 // getMatchedSnippets returns context snippets around matched keywords
@@ -1002,6 +1148,9 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 
 	graph.Truncated = truncated
 
+	// Update access stats asynchronously
+	s.updateAccessStats(entityIDs)
+
 	// Load relations for found entities
 	if len(entityIDs) > 0 {
 		placeholders := make([]string, len(entityIDs))
@@ -1048,6 +1197,30 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 	}
 
 	return graph, nil
+}
+
+// updateAccessStats updates last_accessed_at and access_count for the given entity IDs.
+// Runs asynchronously to avoid blocking read operations.
+func (s *SQLiteStorage) updateAccessStats(entityIDs []int64) {
+	if len(entityIDs) == 0 {
+		return
+	}
+
+	go func() {
+		placeholders := make([]string, len(entityIDs))
+		args := make([]interface{}, len(entityIDs))
+		for i, id := range entityIDs {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(`
+			UPDATE entities
+			SET last_accessed_at = CURRENT_TIMESTAMP,
+			    access_count = COALESCE(access_count, 0) + 1
+			WHERE id IN (%s)
+		`, strings.Join(placeholders, ","))
+		s.db.Exec(query, args...)
+	}()
 }
 
 // ExportData exports all data for migration

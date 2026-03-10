@@ -215,6 +215,10 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 	// Calculate total
 	result.Total = len(entityMap)
 
+	// Reorder within each group by recency (recently accessed entities first)
+	nameMatchIDs = s.reorderByRecency(nameMatchIDs)
+	contentMatchIDs = s.reorderByRecency(contentMatchIDs)
+
 	// Combine IDs with name matches first, then content matches
 	// This ensures entities matched by name/type appear before those matched only by content
 	orderedIDs := append(nameMatchIDs, contentMatchIDs...)
@@ -295,6 +299,19 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			result.Entities = append(result.Entities, hit)
 		}
 	}
+
+	// Update access stats for matched entities
+	s.updateAccessStats(limitedIDs)
+
+	// Build entitySearchHitMap for graph traversal
+	hitMap := make(map[int64]*EntitySearchHit)
+	for _, id := range limitedIDs {
+		info := entityMap[id]
+		hitMap[id] = &EntitySearchHit{Name: info.Name, EntityType: info.EntityType}
+	}
+
+	// Graph traversal: find 1-hop related entities
+	result.RelatedEntities = s.findRelatedEntities(limitedIDs, hitMap)
 
 	// HasMore is only true when limit is specified and there are more results
 	if limit > 0 {
@@ -473,4 +490,47 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 	analysis["most_connected"] = connectedEntities
 
 	return analysis, nil
+}
+
+// reorderByRecency reorders entity IDs by last access time (most recent first).
+// Entities that have never been accessed fall back to updated_at/created_at.
+func (s *SQLiteStorage) reorderByRecency(ids []int64) []int64 {
+	if len(ids) <= 1 {
+		return ids
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id FROM entities
+		WHERE id IN (%s)
+		ORDER BY
+			(1.0 / (1.0 + 0.01 * MAX(0, COALESCE(julianday('now') - julianday(COALESCE(last_accessed_at, updated_at, created_at)), 0))))
+			* (1.0 + log(2.0 + COALESCE(access_count, 0)) / log(2.0))
+			DESC
+	`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return ids // fallback to original order
+	}
+	defer rows.Close()
+
+	var reordered []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			reordered = append(reordered, id)
+		}
+	}
+
+	if len(reordered) == len(ids) {
+		return reordered
+	}
+	return ids // fallback if something went wrong
 }

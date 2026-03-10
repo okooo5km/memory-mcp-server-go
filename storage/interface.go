@@ -47,12 +47,22 @@ type EntitySearchHit struct {
 	RelationsCount    int      `json:"relationsCount"`    // related relations count
 }
 
+// RelatedHit represents an entity related to a search hit via graph traversal
+type RelatedHit struct {
+	Name         string `json:"name"`
+	EntityType   string `json:"entityType"`
+	RelationType string `json:"relationType"` // the relation connecting to the matched entity
+	RelatedTo    string `json:"relatedTo"`    // which matched entity this is related to
+	Direction    string `json:"direction"`    // "outgoing" or "incoming"
+}
+
 // SearchResult holds search results with pagination info
 type SearchResult struct {
-	Entities []EntitySearchHit `json:"entities"`
-	Total    int               `json:"total"`
-	Limit    int               `json:"limit"`
-	HasMore  bool              `json:"hasMore"`
+	Entities        []EntitySearchHit `json:"entities"`
+	RelatedEntities []RelatedHit      `json:"relatedEntities,omitempty"` // 1-hop related entities
+	Total           int               `json:"total"`
+	Limit           int               `json:"limit"`
+	HasMore         bool              `json:"hasMore"`
 }
 
 // GraphSummary holds a lightweight summary of the entire graph
