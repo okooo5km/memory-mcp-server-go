@@ -142,6 +142,10 @@ Tests are available in `storage/search_priority_test.go`:
   --migrate-to string      Destination SQLite file for migration
   --dry-run               Perform a dry run of migration
   --force                 Force overwrite destination file
+
+  # Auth & CORS
+  --auth-bearer string     Require Bearer token for SSE/HTTP
+  --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
 ```
 
 ### Storage Type Detection

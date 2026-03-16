@@ -127,6 +127,9 @@ mms [options]
 
   Auth:
   --auth-bearer string     Require Bearer token for SSE/HTTP
+
+  CORS:
+  --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
 ```
 
 Examples:
@@ -136,6 +139,7 @@ mms                                          # stdio, auto-detect storage
 mms --memory /path/to/memory.json            # custom path, auto-migrates to SQLite
 mms --transport sse --port 9000              # SSE transport
 mms --transport http --auth-bearer mytoken   # Streamable HTTP with auth
+mms --transport http --cors-origin "https://app.example.com,https://admin.example.com"  # CORS whitelist
 ```
 
 ## Configuration

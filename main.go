@@ -325,6 +325,8 @@ func main() {
 	var httpStateless bool
 	// Auth options
 	var authBearer string
+	// CORS options
+	var corsOrigin string
 
 	// Override the default usage message
 	flag.Usage = printUsage
@@ -358,7 +360,21 @@ func main() {
 	// Auth flags
 	flag.StringVar(&authBearer, "auth-bearer", "", "Require Authorization: Bearer <token> for SSE/HTTP transports")
 
+	// CORS flags
+	flag.StringVar(&corsOrigin, "cors-origin", "*", "Allowed CORS origins: '*' for all, or comma-separated list")
+
 	flag.Parse()
+
+	// Parse CORS origins
+	var allowedOrigins []string
+	allowAllOrigins := corsOrigin == "*"
+	if !allowAllOrigins {
+		for _, o := range strings.Split(corsOrigin, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				allowedOrigins = append(allowedOrigins, o)
+			}
+		}
+	}
 
 	// In stdio mode, ensure logging doesn't interfere with MCP JSON-RPC
 	if transport == "stdio" {
@@ -1350,6 +1366,64 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		return mcp.NewToolResultText(string(resultJSON)), nil
 	})
 
+	// Shared auth middleware for SSE/HTTP transports
+	authWrap := func(next http.Handler) http.Handler {
+		if authBearer == "" {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			expected := "Bearer " + authBearer
+			if h := strings.TrimSpace(r.Header.Get("Authorization")); h == expected {
+				next.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		})
+	}
+
+	// Shared CORS middleware for SSE/HTTP transports
+	corsWrap := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+
+			// Origin validation (MCP spec): reject disallowed origins
+			if origin != "" && !allowAllOrigins {
+				allowed := false
+				for _, o := range allowedOrigins {
+					if o == origin {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+			}
+
+			// Set CORS headers
+			if allowAllOrigins {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Add("Vary", "Origin")
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Authorization, Last-Event-ID")
+			w.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+
+			// Handle OPTIONS preflight
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	switch transport {
 	case "stdio":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on stdio")
@@ -1358,22 +1432,6 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 	case "sse":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on SSE")
-
-		// Wrap handlers with optional bearer auth
-		authWrap := func(next http.Handler) http.Handler {
-			if authBearer == "" {
-				return next
-			}
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				expected := "Bearer " + authBearer
-				if h := strings.TrimSpace(r.Header.Get("Authorization")); h == expected {
-					next.ServeHTTP(w, r)
-					return
-				}
-				w.Header().Set("WWW-Authenticate", "Bearer")
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			})
-		}
 
 		mux := http.NewServeMux()
 		customSrv := &http.Server{Handler: mux}
@@ -1384,8 +1442,8 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			server.WithKeepAliveInterval(30*time.Second),
 			server.WithHTTPServer(customSrv),
 		)
-		mux.Handle("/sse", authWrap(sseServer.SSEHandler()))
-		mux.Handle("/message", authWrap(sseServer.MessageHandler()))
+		mux.Handle("/sse", corsWrap(authWrap(sseServer.SSEHandler())))
+		mux.Handle("/message", corsWrap(authWrap(sseServer.MessageHandler())))
 
 		log.Printf("SSE listening on :%d\n", port)
 		// Start in background and handle graceful shutdown
@@ -1422,26 +1480,10 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			httpOpts = append(httpOpts, server.WithStateLess(true))
 		}
 
-		// Auth wrapper
-		authWrap := func(next http.Handler) http.Handler {
-			if authBearer == "" {
-				return next
-			}
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				expected := "Bearer " + authBearer
-				if h := strings.TrimSpace(r.Header.Get("Authorization")); h == expected {
-					next.ServeHTTP(w, r)
-					return
-				}
-				w.Header().Set("WWW-Authenticate", "Bearer")
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			})
-		}
-
 		mux := http.NewServeMux()
 		customSrv := &http.Server{Handler: mux}
 		streamSrv := server.NewStreamableHTTPServer(s, append(httpOpts, server.WithStreamableHTTPServer(customSrv))...)
-		mux.Handle(httpEndpoint, authWrap(streamSrv))
+		mux.Handle(httpEndpoint, corsWrap(authWrap(streamSrv)))
 
 		log.Printf("Streamable HTTP listening on http://localhost:%d%s\n", port, httpEndpoint)
 
