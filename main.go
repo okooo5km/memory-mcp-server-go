@@ -212,7 +212,7 @@ func (m *KnowledgeGraphManager) AddObservations(additions []ObservationAddition)
 	// Convert to storage format
 	obsMap := make(map[string][]string)
 	for _, addition := range additions {
-		obsMap[addition.EntityName] = addition.Contents
+		obsMap[addition.EntityName] = append(obsMap[addition.EntityName], addition.Contents...)
 	}
 
 	// Add observations
