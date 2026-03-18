@@ -22,6 +22,7 @@ func TestAddObservationsDuplicateEntity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create manager: %v", err)
 	}
+	defer mgr.Close()
 
 	// Create the entity first
 	_, err = mgr.CreateEntities([]storage.Entity{{
