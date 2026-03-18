@@ -435,9 +435,6 @@ func main() {
 		server.WithRecovery(),
 	)
 
-	// Declare sampling capability (optional, harmless if unused)
-	s.EnableSampling()
-
 	// ─── MCP Resources ─────────────────────────────────────────────────
 	// Resources allow AI clients to passively load memory context without
 	// explicitly calling tools, improving memory awareness and utilization.
