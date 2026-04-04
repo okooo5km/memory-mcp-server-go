@@ -14,7 +14,7 @@
 * **Entity Management**: Merge duplicate entities, update types, modify observations, detect conflicts
 * **Observation Metadata**: Track source, confidence, and tags for each observation
 * **MCP Resources & Prompts**: AI clients can passively load graph summaries and use guided memory workflows
-* **Flexible Transport**: Supports stdio, SSE, and Streamable HTTP with optional Bearer authentication
+* **Flexible Transport**: Supports stdio, SSE, and Streamable HTTP with optional Bearer or OAuth 2.1 authentication
 * **Seamless Migration**: Automatic upgrade from JSONL to SQLite with zero intervention
 * **Cross-Platform**: Pure Go SQLite (no CGO required), works on Linux, macOS, and Windows
 
@@ -128,6 +128,11 @@ mms [options]
   Auth:
   --auth-bearer string     Require Bearer token for SSE/HTTP
 
+  OAuth 2.1 (mutually exclusive with --auth-bearer):
+  --oauth-user string      OAuth login username (env: OAUTH_USER)
+  --oauth-pass string      OAuth login password (env: OAUTH_PASS)
+  --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
+
   CORS:
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
 ```
@@ -138,7 +143,8 @@ Examples:
 mms                                          # stdio, auto-detect storage
 mms --memory /path/to/memory.json            # custom path, auto-migrates to SQLite
 mms --transport sse --port 9000              # SSE transport
-mms --transport http --auth-bearer mytoken   # Streamable HTTP with auth
+mms --transport http --auth-bearer mytoken   # Streamable HTTP with Bearer auth
+mms --transport http --oauth-user admin --oauth-pass secret  # OAuth 2.1 auth
 mms --transport http --cors-origin "https://app.example.com,https://admin.example.com"  # CORS whitelist
 ```
 
@@ -156,6 +162,20 @@ mms --transport http --cors-origin "https://app.example.com,https://admin.exampl
   }
 }
 ```
+
+### Claude Desktop Connectors (OAuth)
+
+For remote deployment with OAuth 2.1 authentication, compatible with Claude Desktop's Custom Connectors:
+
+```bash
+# Start server with OAuth
+mms --transport http --oauth-user admin --oauth-pass secret --port 8080
+
+# Or with environment variables and explicit issuer
+OAUTH_USER=admin OAUTH_PASS=secret mms --transport http --oauth-issuer https://mcp.example.com
+```
+
+Then in Claude Desktop: **Settings → Connectors → Add Custom Connector** → enter your server URL (e.g., `https://mcp.example.com/mcp`). Claude will automatically discover the OAuth endpoints and prompt you to log in.
 
 ### Cursor
 
@@ -227,8 +247,9 @@ curl -X DELETE http://localhost:8080/mcp \
 ## Security & Deployment
 
 - Deploy behind TLS (Nginx/Caddy/Traefik), bind server to localhost
-- Use `--auth-bearer $(openssl rand -hex 32)` in any non-local environment
-- Forward `Authorization` header from reverse proxy to backend
+- **Simple auth**: Use `--auth-bearer $(openssl rand -hex 32)` for programmatic clients
+- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Supports PKCE (S256), dynamic client registration, and token refresh with rotation
+- Forward `Authorization` header from reverse proxy to backend; set `--oauth-issuer` to the public URL when behind a proxy
 - Run as non-root, open only required ports, enable rate limiting for untrusted clients
 
 ## Storage System
