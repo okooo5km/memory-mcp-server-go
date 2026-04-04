@@ -18,6 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"memory-mcp-server-go/auth"
 	"memory-mcp-server-go/storage"
 
 	// Use pure Go SQLite driver
@@ -325,6 +326,10 @@ func main() {
 	var httpStateless bool
 	// Auth options
 	var authBearer string
+	// OAuth options
+	var oauthUser string
+	var oauthPass string
+	var oauthIssuer string
 	// CORS options
 	var corsOrigin string
 
@@ -360,10 +365,35 @@ func main() {
 	// Auth flags
 	flag.StringVar(&authBearer, "auth-bearer", "", "Require Authorization: Bearer <token> for SSE/HTTP transports")
 
+	// OAuth flags
+	flag.StringVar(&oauthUser, "oauth-user", "", "OAuth login username (env: OAUTH_USER)")
+	flag.StringVar(&oauthPass, "oauth-pass", "", "OAuth login password (env: OAUTH_PASS)")
+	flag.StringVar(&oauthIssuer, "oauth-issuer", "", "OAuth issuer URL, e.g. https://mcp.example.com (auto-detect if empty)")
+
 	// CORS flags
 	flag.StringVar(&corsOrigin, "cors-origin", "*", "Allowed CORS origins: '*' for all, or comma-separated list")
 
 	flag.Parse()
+
+	// OAuth: environment variable fallback
+	if oauthUser == "" {
+		oauthUser = os.Getenv("OAUTH_USER")
+	}
+	if oauthPass == "" {
+		oauthPass = os.Getenv("OAUTH_PASS")
+	}
+	if oauthIssuer == "" {
+		oauthIssuer = os.Getenv("OAUTH_ISSUER")
+	}
+
+	// Determine if OAuth is enabled
+	oauthEnabled := oauthUser != "" && oauthPass != ""
+	if (oauthUser != "") != (oauthPass != "") {
+		log.Fatal("Both --oauth-user and --oauth-pass must be provided together")
+	}
+	if oauthEnabled && authBearer != "" {
+		log.Fatal("--auth-bearer and --oauth-user/--oauth-pass are mutually exclusive")
+	}
 
 	// Parse CORS origins
 	var allowedOrigins []string
@@ -1363,8 +1393,22 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		return mcp.NewToolResultText(string(resultJSON)), nil
 	})
 
+	// Create OAuth server if enabled
+	var oauthSrv *auth.OAuthServer
+	if oauthEnabled {
+		oauthSrv = auth.NewOAuthServer(auth.Config{
+			Username: oauthUser,
+			Password: oauthPass,
+			Issuer:   oauthIssuer,
+		})
+		defer oauthSrv.Close()
+	}
+
 	// Shared auth middleware for SSE/HTTP transports
 	authWrap := func(next http.Handler) http.Handler {
+		if oauthSrv != nil {
+			return oauthSrv.Middleware(next)
+		}
 		if authBearer == "" {
 			return next
 		}
@@ -1439,6 +1483,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			server.WithKeepAliveInterval(30*time.Second),
 			server.WithHTTPServer(customSrv),
 		)
+		if oauthSrv != nil {
+			oauthSrv.RegisterRoutes(mux, corsWrap)
+		}
 		mux.Handle("/sse", corsWrap(authWrap(sseServer.SSEHandler())))
 		mux.Handle("/message", corsWrap(authWrap(sseServer.MessageHandler())))
 
@@ -1480,6 +1527,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		mux := http.NewServeMux()
 		customSrv := &http.Server{Handler: mux}
 		streamSrv := server.NewStreamableHTTPServer(s, append(httpOpts, server.WithStreamableHTTPServer(customSrv))...)
+		if oauthSrv != nil {
+			oauthSrv.RegisterRoutes(mux, corsWrap)
+		}
 		mux.Handle(httpEndpoint, corsWrap(authWrap(streamSrv)))
 
 		log.Printf("Streamable HTTP listening on http://localhost:%d%s\n", port, httpEndpoint)

@@ -111,6 +111,32 @@ Tests are available in `storage/search_priority_test.go`:
    - Verification and rollback support
    - Progress reporting
 
+### OAuth Layer (auth/ directory)
+
+1. **OAuth Server** (auth/oauth.go):
+   - OAuth 2.1 authorization server for MCP
+   - Config, NewOAuthServer(), RegisterRoutes(), Middleware(), Close()
+   - Issuer URL auto-detection from request or explicit config
+
+2. **HTTP Handlers** (auth/handlers.go):
+   - `/.well-known/oauth-protected-resource` — Protected Resource Metadata (RFC 9728)
+   - `/.well-known/oauth-authorization-server` — Authorization Server Metadata (RFC 8414)
+   - `/register` — Dynamic Client Registration (RFC 7591)
+   - `/authorize` GET/POST — Login page + form submission
+   - `/token` — Token issuance (authorization_code) and refresh (refresh_token)
+
+3. **In-Memory Store** (auth/store.go):
+   - ClientStore, CodeStore, TokenStore with sync.RWMutex
+   - Periodic cleanup goroutine (every 15 minutes)
+
+4. **Token & PKCE** (auth/token.go):
+   - Opaque token generation (crypto/rand + hex)
+   - PKCE S256 verification (sha256 + base64url + constant-time compare)
+
+5. **Login Page** (auth/login.html):
+   - Embedded HTML template (go:embed)
+   - Chinese labels, card-style layout, error display
+
 ### Core Components
 
 1. **KnowledgeGraphManager** (main.go:33-257):
@@ -145,6 +171,9 @@ Tests are available in `storage/search_priority_test.go`:
 
   # Auth & CORS
   --auth-bearer string     Require Bearer token for SSE/HTTP
+  --oauth-user string      OAuth login username (env: OAUTH_USER)
+  --oauth-pass string      OAuth login password (env: OAUTH_PASS)
+  --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
 ```
 
