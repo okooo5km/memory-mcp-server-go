@@ -200,7 +200,7 @@ func TestFullOAuthFlow(t *testing.T) {
 		t.Fatalf("authorize POST (bad creds): expected 200 (re-render), got %d", w.Code)
 	}
 	bodyBytes, _ := io.ReadAll(w.Body)
-	if !strings.Contains(string(bodyBytes), "用户名或密码错误") {
+	if !strings.Contains(string(bodyBytes), "Invalid username or password") {
 		t.Error("expected error message in login page")
 	}
 
@@ -211,19 +211,30 @@ func TestFullOAuthFlow(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-	if w.Code != http.StatusFound {
-		t.Fatalf("authorize POST (good creds): expected 302, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("authorize POST (good creds): expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	loc, err := url.Parse(w.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse redirect URL: %v", err)
+	successBody := w.Body.String()
+	if !strings.Contains(successBody, "Authorization Successful") {
+		t.Error("expected success page")
 	}
-	code := loc.Query().Get("code")
+	// Extract code from the redirect URL embedded in the success page
+	codeIdx := strings.Index(successBody, "code=")
+	if codeIdx == -1 {
+		t.Fatal("code should be in success page redirect URL")
+	}
+	// Parse the callback URL from the page to extract code
+	// The URL is in a JS string, find it between quotes after code=
+	codeStr := successBody[codeIdx+5:]
+	if ampIdx := strings.IndexAny(codeStr, "&\"\\"); ampIdx > 0 {
+		codeStr = codeStr[:ampIdx]
+	}
+	code := codeStr
 	if code == "" {
-		t.Fatal("code should be in redirect URL")
+		t.Fatal("code should not be empty")
 	}
-	if loc.Query().Get("state") != "test-state" {
-		t.Error("state should be preserved")
+	if !strings.Contains(successBody, "state=test-state") {
+		t.Error("state should be preserved in redirect URL")
 	}
 
 	// Step 6: POST /token (authorization_code grant)

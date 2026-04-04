@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -85,7 +85,7 @@
 <body>
 <div class="card">
   <h1>Memory MCP Server</h1>
-  <p class="subtitle">请登录以授权访问</p>
+  <p class="subtitle">Sign in to authorize access</p>
   <div class="error">{{.Error}}</div>
   <form method="POST" action="/authorize">
     <input type="hidden" name="client_id" value="{{.ClientID}}">
@@ -95,11 +95,11 @@
     <input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}">
     <input type="hidden" name="response_type" value="{{.ResponseType}}">
     <input type="hidden" name="scope" value="{{.Scope}}">
-    <label for="username">用户名</label>
+    <label for="username">Username</label>
     <input type="text" id="username" name="username" autocomplete="username" required autofocus>
-    <label for="password">密码</label>
+    <label for="password">Password</label>
     <input type="password" id="password" name="password" autocomplete="current-password" required>
-    <button type="submit">登录</button>
+    <button type="submit">Sign In</button>
   </form>
 </div>
 </body>

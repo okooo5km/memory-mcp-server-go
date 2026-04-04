@@ -181,7 +181,7 @@ func (s *OAuthServer) handleAuthorizePOST(w http.ResponseWriter, r *http.Request
 			CodeChallengeMethod: codeChallengeMethod,
 			ResponseType:        r.FormValue("response_type"),
 			Scope:               r.FormValue("scope"),
-			Error:               "用户名或密码错误",
+			Error:               "Invalid username or password",
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -206,7 +206,7 @@ func (s *OAuthServer) handleAuthorizePOST(w http.ResponseWriter, r *http.Request
 		ExpiresAt:           timeNow().Add(authCodeTTL),
 	})
 
-	// Redirect back with code and state
+	// Build callback URL with code and state
 	redirectURL, err := url.Parse(redirectURI)
 	if err != nil {
 		http.Error(w, "Invalid redirect_uri", http.StatusBadRequest)
@@ -218,7 +218,10 @@ func (s *OAuthServer) handleAuthorizePOST(w http.ResponseWriter, r *http.Request
 		q.Set("state", state)
 	}
 	redirectURL.RawQuery = q.Encode()
-	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+
+	// Render success page with delayed redirect
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	successTmpl.Execute(w, successPageData{RedirectURL: redirectURL.String()})
 }
 
 // --- 6. Token Endpoint ---
@@ -334,6 +337,10 @@ func (s *OAuthServer) issueTokenPair(w http.ResponseWriter, clientID string) {
 }
 
 // --- Helpers ---
+
+type successPageData struct {
+	RedirectURL string
+}
 
 type loginPageData struct {
 	ClientID            string

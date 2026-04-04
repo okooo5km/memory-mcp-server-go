@@ -10,10 +10,11 @@ import (
 	"strings"
 )
 
-//go:embed login.html
-var loginFS embed.FS
+//go:embed login.html success.html
+var templateFS embed.FS
 
-var loginTmpl = template.Must(template.ParseFS(loginFS, "login.html"))
+var loginTmpl = template.Must(template.ParseFS(templateFS, "login.html"))
+var successTmpl = template.Must(template.ParseFS(templateFS, "success.html"))
 
 // Config holds OAuth server configuration.
 type Config struct {
