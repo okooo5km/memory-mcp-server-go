@@ -18,6 +18,8 @@ var templateFS embed.FS
 var loginTmpl = template.Must(template.ParseFS(templateFS, "login.html"))
 var successTmpl = template.Must(template.ParseFS(templateFS, "success.html"))
 
+const defaultRefreshReplayGrace = accessTokenTTL + 15*time.Minute
+
 // Config holds OAuth server configuration.
 type Config struct {
 	Username           string        // required login username
@@ -66,7 +68,7 @@ func NewOAuthServerWithError(cfg Config) (*OAuthServer, error) {
 	}
 	grace := cfg.RefreshReplayGrace
 	if grace <= 0 {
-		grace = 2 * time.Minute
+		grace = defaultRefreshReplayGrace
 	}
 	return &OAuthServer{
 		config:  cfg,

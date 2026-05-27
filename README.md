@@ -134,6 +134,8 @@ mms [options]
   --oauth-pass string      OAuth login password (env: OAUTH_PASS)
   --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
   --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
+  --oauth-refresh-replay-grace string
+                           Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)
 
   CORS:
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
@@ -175,6 +177,7 @@ mms --transport http --host 127.0.0.1 --oauth-user admin --oauth-pass secret --o
 
 # Or with environment variables and explicit issuer
 OAUTH_USER=admin OAUTH_PASS=secret OAUTH_STORE_PATH=/var/lib/mms/oauth.db \
+  OAUTH_REFRESH_REPLAY_GRACE=24h \
   mms --transport http --oauth-issuer https://mcp.example.com
 ```
 
@@ -251,7 +254,7 @@ curl -X DELETE http://localhost:8080/mcp \
 
 - Deploy behind TLS (Nginx/Caddy/Traefik), bind server to localhost
 - **Simple auth**: Use `--auth-bearer $(openssl rand -hex 32)` for programmatic clients
-- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Set `--oauth-store` in production so registered clients and tokens survive restarts, and run the service with a restrictive umask such as systemd `UMask=0077` to protect SQLite WAL/SHM files. Supports PKCE (S256), dynamic client registration, durable token storage, and refresh token rotation with a short replay grace window for concurrent clients
+- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Set `--oauth-store` in production so registered clients and tokens survive restarts, and run the service with a restrictive umask such as systemd `UMask=0077` to protect SQLite WAL/SHM files. Supports PKCE (S256), dynamic client registration, durable token storage, and refresh token rotation with a replay grace window for concurrent or multi-worker clients. Use `--oauth-refresh-replay-grace` for clients that keep stale refresh tokens in multiple processes
 - Forward `Authorization` header from reverse proxy to backend; set `--oauth-issuer` to the public URL when behind a proxy
 - Run as non-root, open only required ports, enable rate limiting for untrusted clients
 

@@ -97,4 +97,5 @@ make fmt && make check && go test ./... && make build
 - For reverse-proxied HTTP/SSE deployments, bind to localhost with `--host 127.0.0.1` / `MMS_HOST=127.0.0.1`.
 - For remote OAuth deployments, set `--oauth-store` / `OAUTH_STORE_PATH` so OAuth clients and tokens survive restarts.
 - For systemd OAuth deployments, set `UMask=0077` so OAuth SQLite database and sidecar files are private.
+- For multi-worker clients such as Codex, tune `--oauth-refresh-replay-grace` / `OAUTH_REFRESH_REPLAY_GRACE` when stale refresh-token caches are expected.
 - Default builds use pure Go SQLite (`CGO_ENABLED=0`). Respect stdout protocol constraints across transports.

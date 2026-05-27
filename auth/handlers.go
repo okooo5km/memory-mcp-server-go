@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -291,15 +292,28 @@ func (s *OAuthServer) handleTokenRefresh(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		switch {
 		case errors.Is(err, errRefreshClientMismatch):
+			log.Printf("OAuth refresh failed: client_id=%s reason=client_mismatch", shortOAuthID(clientID))
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "client_id mismatch"})
 		case errors.Is(err, errInvalidRefreshToken):
+			log.Printf("OAuth refresh failed: client_id=%s reason=invalid_or_expired_refresh_token", shortOAuthID(clientID))
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "invalid or expired refresh token"})
 		default:
+			log.Printf("OAuth refresh failed: client_id=%s reason=internal_error error=%v", shortOAuthID(clientID), err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 		return
 	}
+	if pair.Replayed {
+		log.Printf("OAuth refresh replay accepted: client_id=%s access_expires_at=%s", shortOAuthID(clientID), pair.AccessExpiresAt.UTC().Format(time.RFC3339))
+	}
 	s.writeTokenPair(w, pair)
+}
+
+func shortOAuthID(v string) string {
+	if len(v) <= 12 {
+		return v
+	}
+	return v[:12]
 }
 
 // issueTokenPair generates and returns a new access+refresh token pair.

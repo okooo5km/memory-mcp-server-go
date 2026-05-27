@@ -129,7 +129,7 @@ Tests are available in `storage/search_priority_test.go`:
    - ClientStore, CodeStore, TokenStore with sync.RWMutex
    - Optional SQLite-backed persistence via `--oauth-store` / `OAUTH_STORE_PATH`
    - Persistent OAuth store files are chmodded to `0600`; systemd deployments should also use `UMask=0077`
-   - Refresh token rotation includes a short replay grace window for concurrent clients
+   - Refresh token rotation includes a configurable replay grace window for concurrent or stale-worker clients
    - Periodic cleanup goroutine (every 15 minutes)
 
 4. **Token & PKCE** (auth/token.go):
@@ -179,6 +179,8 @@ Tests are available in `storage/search_priority_test.go`:
   --oauth-pass string      OAuth login password (env: OAUTH_PASS)
   --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
   --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
+  --oauth-refresh-replay-grace string
+                         Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
 ```
 

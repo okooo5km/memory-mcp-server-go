@@ -77,6 +77,7 @@ type TokenPair struct {
 	RefreshToken     string
 	AccessExpiresAt  time.Time
 	RefreshExpiresAt time.Time
+	Replayed         bool
 }
 
 // ClientStore manages registered OAuth clients in memory.
@@ -253,9 +254,9 @@ func (s *TokenStore) DeleteRefreshToken(token string) {
 	}
 }
 
-// RotateRefreshToken atomically rotates a refresh token. A short replay grace
-// window returns the same replacement pair for concurrent refresh attempts from
-// clients that share token cache state.
+// RotateRefreshToken atomically rotates a refresh token. The replay grace window
+// returns the same replacement pair for stale or concurrent refresh attempts from
+// clients that share token cache state imperfectly.
 func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.Time, replayGrace time.Duration, issue func() (*TokenPair, error)) (*TokenPair, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -289,6 +290,7 @@ func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.
 				RefreshToken:     rt.ReplacementRefreshToken,
 				AccessExpiresAt:  rt.ReplacementAccessExpiresAt,
 				RefreshExpiresAt: refreshExpiresAt,
+				Replayed:         true,
 			}, nil
 		}
 		return nil, errInvalidRefreshToken

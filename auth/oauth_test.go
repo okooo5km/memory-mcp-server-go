@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -371,6 +372,52 @@ func TestRefreshReplayExpiresAfterGrace(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("late refresh replay: expected 400, got %d", w.Code)
+	}
+}
+
+func TestDefaultRefreshReplayGraceCoversStaleWorker(t *testing.T) {
+	tokens := newTokenStore()
+	clientID := "codex-client"
+	refreshToken := "refresh-old"
+	now := time.Date(2026, 5, 27, 7, 4, 48, 0, time.UTC)
+	tokens.PutRefreshToken(&RefreshTokenEntry{
+		Token:     refreshToken,
+		ClientID:  clientID,
+		ExpiresAt: now.Add(refreshTokenTTL),
+	})
+
+	pair, err := tokens.RotateRefreshToken(refreshToken, clientID, now, defaultRefreshReplayGrace, func() (*TokenPair, error) {
+		return &TokenPair{
+			AccessToken:      "access-new",
+			RefreshToken:     "refresh-new",
+			AccessExpiresAt:  now.Add(accessTokenTTL),
+			RefreshExpiresAt: now.Add(refreshTokenTTL),
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+
+	replayAt := now.Add(accessTokenTTL - time.Minute)
+	replay, err := tokens.RotateRefreshToken(refreshToken, clientID, replayAt, defaultRefreshReplayGrace, func() (*TokenPair, error) {
+		t.Fatal("replay should not issue a new token pair")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("stale worker refresh replay: %v", err)
+	}
+	if !replay.Replayed {
+		t.Fatal("expected replayed token pair")
+	}
+	if replay.AccessToken != pair.AccessToken || replay.RefreshToken != pair.RefreshToken {
+		t.Fatal("refresh replay should return the same replacement token pair")
+	}
+
+	_, err = tokens.RotateRefreshToken(refreshToken, clientID, now.Add(defaultRefreshReplayGrace+time.Second), defaultRefreshReplayGrace, func() (*TokenPair, error) {
+		return nil, nil
+	})
+	if !errors.Is(err, errInvalidRefreshToken) {
+		t.Fatalf("late refresh replay: expected invalid refresh token, got %v", err)
 	}
 }
 

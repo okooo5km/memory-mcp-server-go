@@ -341,6 +341,7 @@ func main() {
 	var oauthPass string
 	var oauthIssuer string
 	var oauthStore string
+	var oauthRefreshReplayGrace string
 	// CORS options
 	var corsOrigin string
 
@@ -382,6 +383,7 @@ func main() {
 	flag.StringVar(&oauthPass, "oauth-pass", "", "OAuth login password (env: OAUTH_PASS)")
 	flag.StringVar(&oauthIssuer, "oauth-issuer", "", "OAuth issuer URL, e.g. https://mcp.example.com (auto-detect if empty)")
 	flag.StringVar(&oauthStore, "oauth-store", "", "SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)")
+	flag.StringVar(&oauthRefreshReplayGrace, "oauth-refresh-replay-grace", "", "Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)")
 
 	// CORS flags
 	flag.StringVar(&corsOrigin, "cors-origin", "*", "Allowed CORS origins: '*' for all, or comma-separated list")
@@ -401,8 +403,19 @@ func main() {
 	if oauthStore == "" {
 		oauthStore = os.Getenv("OAUTH_STORE_PATH")
 	}
+	if oauthRefreshReplayGrace == "" {
+		oauthRefreshReplayGrace = os.Getenv("OAUTH_REFRESH_REPLAY_GRACE")
+	}
 	if host == "" {
 		host = os.Getenv("MMS_HOST")
+	}
+	var refreshReplayGrace time.Duration
+	if oauthRefreshReplayGrace != "" {
+		var err error
+		refreshReplayGrace, err = time.ParseDuration(oauthRefreshReplayGrace)
+		if err != nil {
+			log.Fatalf("Invalid --oauth-refresh-replay-grace: %v", err)
+		}
 	}
 
 	// Determine if OAuth is enabled
@@ -1417,10 +1430,11 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 	if oauthEnabled {
 		var err error
 		oauthSrv, err = auth.NewOAuthServerWithError(auth.Config{
-			Username:  oauthUser,
-			Password:  oauthPass,
-			Issuer:    oauthIssuer,
-			StorePath: oauthStore,
+			Username:           oauthUser,
+			Password:           oauthPass,
+			Issuer:             oauthIssuer,
+			StorePath:          oauthStore,
+			RefreshReplayGrace: refreshReplayGrace,
 		})
 		if err != nil {
 			log.Fatal(err)

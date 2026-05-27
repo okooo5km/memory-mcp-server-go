@@ -29,6 +29,7 @@ export OAUTH_STORE_PATH=/var/lib/mms/oauth.db
 | `--oauth-pass` | `OAUTH_PASS` | OAuth login password |
 | `--oauth-issuer` | `OAUTH_ISSUER` | Issuer URL (auto-detected from request if empty) |
 | `--oauth-store` | `OAUTH_STORE_PATH` | Optional SQLite store for durable OAuth clients, access tokens, and refresh tokens |
+| `--oauth-refresh-replay-grace` | `OAUTH_REFRESH_REPLAY_GRACE` | Duration to accept replay of a rotated refresh token (default `75m`) |
 
 Both `--oauth-user` and `--oauth-pass` must be provided together to enable OAuth.
 
@@ -80,9 +81,9 @@ The server implements the following OAuth 2.1 endpoints:
 | Access Token | 1 hour |
 | Refresh Token | 30 days |
 
-Refresh tokens are rotated on each use (old token is revoked).
+Refresh tokens are rotated on each use.
 
-The server keeps a short replay grace window for refresh token rotation. If two client processes refresh the same token at nearly the same time, the second request receives the same replacement token pair instead of failing with `invalid_grant`.
+The server keeps a replay grace window for refresh token rotation. If multiple client workers refresh the same token from stale local cache, later requests receive the same replacement token pair instead of failing with `invalid_grant`. The default is `75m`, which covers the access token lifetime plus clock/process skew. For clients that keep multiple long-lived workers, set a longer value such as `24h`.
 
 ### Durable Token Storage
 
@@ -94,6 +95,7 @@ Without `--oauth-store`, OAuth clients and tokens are stored in memory and are c
   --oauth-pass secret \
   --oauth-issuer https://mcp.example.com \
   --oauth-store /var/lib/mms/oauth.db \
+  --oauth-refresh-replay-grace 24h \
   --host 127.0.0.1
 ```
 
@@ -130,6 +132,6 @@ curl -X POST http://localhost:8080/register \
 - All tokens are opaque random strings (not JWT)
 - Use `--oauth-store` in production to persist OAuth clients and tokens across restarts
 - Use a restrictive process umask such as systemd `UMask=0077` for OAuth SQLite sidecar files
-- Refresh token rotation includes a short replay grace window for concurrent refresh attempts
+- Refresh token rotation includes a configurable replay grace window for concurrent or stale-worker refresh attempts
 - Bind HTTP/SSE transports to localhost behind a reverse proxy with `--host 127.0.0.1`
 - For production use, deploy behind HTTPS (TLS termination via reverse proxy)
