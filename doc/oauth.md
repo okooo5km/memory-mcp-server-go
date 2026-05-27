@@ -8,9 +8,14 @@ Memory MCP Server supports OAuth 2.1 authentication, compatible with Claude Desk
 # Start with OAuth authentication
 ./mms --transport http --oauth-user admin --oauth-pass mypassword --port 8080
 
+# Persist OAuth clients and tokens in production
+./mms --transport http --oauth-user admin --oauth-pass mypassword \
+      --oauth-store /var/lib/mms/oauth.db --host 127.0.0.1 --port 8080
+
 # Or use environment variables
 export OAUTH_USER=admin
 export OAUTH_PASS=mypassword
+export OAUTH_STORE_PATH=/var/lib/mms/oauth.db
 ./mms --transport http --port 8080
 ```
 
@@ -23,6 +28,7 @@ export OAUTH_PASS=mypassword
 | `--oauth-user` | `OAUTH_USER` | OAuth login username |
 | `--oauth-pass` | `OAUTH_PASS` | OAuth login password |
 | `--oauth-issuer` | `OAUTH_ISSUER` | Issuer URL (auto-detected from request if empty) |
+| `--oauth-store` | `OAUTH_STORE_PATH` | Optional SQLite store for durable OAuth clients, access tokens, and refresh tokens |
 
 Both `--oauth-user` and `--oauth-pass` must be provided together to enable OAuth.
 
@@ -76,6 +82,21 @@ The server implements the following OAuth 2.1 endpoints:
 
 Refresh tokens are rotated on each use (old token is revoked).
 
+The server keeps a short replay grace window for refresh token rotation. If two client processes refresh the same token at nearly the same time, the second request receives the same replacement token pair instead of failing with `invalid_grant`.
+
+### Durable Token Storage
+
+Without `--oauth-store`, OAuth clients and tokens are stored in memory and are cleared on server restart. For remote deployments, always set a durable SQLite path:
+
+```bash
+./mms --transport http \
+  --oauth-user admin \
+  --oauth-pass secret \
+  --oauth-issuer https://mcp.example.com \
+  --oauth-store /var/lib/mms/oauth.db \
+  --host 127.0.0.1
+```
+
 ## Claude Desktop Integration
 
 1. Start the server with OAuth enabled
@@ -104,6 +125,8 @@ curl -X POST http://localhost:8080/register \
 
 - Credentials are compared using constant-time comparison to prevent timing attacks
 - PKCE (S256) is supported for secure authorization code exchange
-- All tokens are opaque random strings (not JWT) stored in memory
-- Token storage is cleared on server restart (clients must re-authenticate)
+- All tokens are opaque random strings (not JWT)
+- Use `--oauth-store` in production to persist OAuth clients and tokens across restarts
+- Refresh token rotation includes a short replay grace window for concurrent refresh attempts
+- Bind HTTP/SSE transports to localhost behind a reverse proxy with `--host 127.0.0.1`
 - For production use, deploy behind HTTPS (TLS termination via reverse proxy)

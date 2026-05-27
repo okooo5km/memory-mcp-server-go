@@ -4,8 +4,14 @@
 package auth
 
 import (
+	"errors"
 	"sync"
 	"time"
+)
+
+var (
+	errInvalidRefreshToken   = errors.New("invalid or expired refresh token")
+	errRefreshClientMismatch = errors.New("client_id mismatch")
 )
 
 // OAuthClient represents a dynamically registered OAuth client (RFC 7591).
@@ -17,6 +23,21 @@ type OAuthClient struct {
 	GrantTypes    []string  `json:"grant_types"`
 	ResponseTypes []string  `json:"response_types"`
 	CreatedAt     time.Time `json:"-"`
+}
+
+type persistentClientStore interface {
+	putClient(*OAuthClient) error
+	getClient(clientID string) (*OAuthClient, bool)
+}
+
+type persistentTokenStore interface {
+	putAccessToken(*TokenEntry) error
+	getAccessToken(token string) (*TokenEntry, bool)
+	deleteAccessToken(token string) error
+	putRefreshToken(*RefreshTokenEntry) error
+	getRefreshToken(token string) (*RefreshTokenEntry, bool)
+	deleteRefreshToken(token string) error
+	rotateRefreshToken(oldRefreshToken string, access *TokenEntry, replacementRefresh *RefreshTokenEntry, oldRefresh *RefreshTokenEntry) error
 }
 
 // AuthorizationCode represents a pending authorization code.
@@ -41,15 +62,28 @@ type TokenEntry struct {
 
 // RefreshTokenEntry represents an issued refresh token.
 type RefreshTokenEntry struct {
-	Token     string
-	ClientID  string
-	ExpiresAt time.Time
+	Token                      string
+	ClientID                   string
+	ExpiresAt                  time.Time
+	ReplacedAt                 time.Time
+	ReplacementAccessToken     string
+	ReplacementRefreshToken    string
+	ReplacementAccessExpiresAt time.Time
+}
+
+// TokenPair represents a freshly issued access and refresh token pair.
+type TokenPair struct {
+	AccessToken      string
+	RefreshToken     string
+	AccessExpiresAt  time.Time
+	RefreshExpiresAt time.Time
 }
 
 // ClientStore manages registered OAuth clients in memory.
 type ClientStore struct {
 	mu      sync.RWMutex
 	clients map[string]*OAuthClient // keyed by client_id
+	persist persistentClientStore
 }
 
 func newClientStore() *ClientStore {
@@ -60,12 +94,26 @@ func (s *ClientStore) Put(c *OAuthClient) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clients[c.ClientID] = c
+	if s.persist != nil {
+		_ = s.persist.putClient(c)
+	}
 }
 
 func (s *ClientStore) Get(clientID string) (*OAuthClient, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	c, ok := s.clients[clientID]
+	s.mu.RUnlock()
+	if ok {
+		return c, true
+	}
+	if s.persist != nil {
+		c, ok = s.persist.getClient(clientID)
+		if ok {
+			s.mu.Lock()
+			s.clients[clientID] = c
+			s.mu.Unlock()
+		}
+	}
 	return c, ok
 }
 
@@ -123,6 +171,7 @@ type TokenStore struct {
 	mu            sync.RWMutex
 	accessTokens  map[string]*TokenEntry        // keyed by access token
 	refreshTokens map[string]*RefreshTokenEntry // keyed by refresh token
+	persist       persistentTokenStore
 }
 
 func newTokenStore() *TokenStore {
@@ -136,12 +185,26 @@ func (s *TokenStore) PutAccessToken(t *TokenEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.accessTokens[t.Token] = t
+	if s.persist != nil {
+		_ = s.persist.putAccessToken(t)
+	}
 }
 
 func (s *TokenStore) GetAccessToken(token string) (*TokenEntry, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	t, ok := s.accessTokens[token]
+	s.mu.RUnlock()
+	if ok {
+		return t, true
+	}
+	if s.persist != nil {
+		t, ok = s.persist.getAccessToken(token)
+		if ok {
+			s.mu.Lock()
+			s.accessTokens[token] = t
+			s.mu.Unlock()
+		}
+	}
 	return t, ok
 }
 
@@ -149,18 +212,35 @@ func (s *TokenStore) DeleteAccessToken(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.accessTokens, token)
+	if s.persist != nil {
+		_ = s.persist.deleteAccessToken(token)
+	}
 }
 
 func (s *TokenStore) PutRefreshToken(t *RefreshTokenEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refreshTokens[t.Token] = t
+	if s.persist != nil {
+		_ = s.persist.putRefreshToken(t)
+	}
 }
 
 func (s *TokenStore) GetRefreshToken(token string) (*RefreshTokenEntry, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	t, ok := s.refreshTokens[token]
+	s.mu.RUnlock()
+	if ok {
+		return t, true
+	}
+	if s.persist != nil {
+		t, ok = s.persist.getRefreshToken(token)
+		if ok {
+			s.mu.Lock()
+			s.refreshTokens[token] = t
+			s.mu.Unlock()
+		}
+	}
 	return t, ok
 }
 
@@ -168,6 +248,81 @@ func (s *TokenStore) DeleteRefreshToken(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.refreshTokens, token)
+	if s.persist != nil {
+		_ = s.persist.deleteRefreshToken(token)
+	}
+}
+
+// RotateRefreshToken atomically rotates a refresh token. A short replay grace
+// window returns the same replacement pair for concurrent refresh attempts from
+// clients that share token cache state.
+func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.Time, replayGrace time.Duration, issue func() (*TokenPair, error)) (*TokenPair, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rt, ok := s.refreshTokens[refreshToken]
+	if !ok && s.persist != nil {
+		rt, ok = s.persist.getRefreshToken(refreshToken)
+		if ok {
+			s.refreshTokens[refreshToken] = rt
+		}
+	}
+	if !ok || now.After(rt.ExpiresAt) {
+		return nil, errInvalidRefreshToken
+	}
+	if rt.ClientID != clientID {
+		return nil, errRefreshClientMismatch
+	}
+	if !rt.ReplacedAt.IsZero() {
+		if now.Sub(rt.ReplacedAt) <= replayGrace && rt.ReplacementAccessToken != "" && rt.ReplacementRefreshToken != "" {
+			refreshExpiresAt := now.Add(refreshTokenTTL)
+			if replacement, ok := s.refreshTokens[rt.ReplacementRefreshToken]; ok {
+				refreshExpiresAt = replacement.ExpiresAt
+			} else if s.persist != nil {
+				if replacement, ok := s.persist.getRefreshToken(rt.ReplacementRefreshToken); ok {
+					refreshExpiresAt = replacement.ExpiresAt
+					s.refreshTokens[rt.ReplacementRefreshToken] = replacement
+				}
+			}
+			return &TokenPair{
+				AccessToken:      rt.ReplacementAccessToken,
+				RefreshToken:     rt.ReplacementRefreshToken,
+				AccessExpiresAt:  rt.ReplacementAccessExpiresAt,
+				RefreshExpiresAt: refreshExpiresAt,
+			}, nil
+		}
+		return nil, errInvalidRefreshToken
+	}
+
+	pair, err := issue()
+	if err != nil {
+		return nil, err
+	}
+	access := &TokenEntry{
+		Token:        pair.AccessToken,
+		ClientID:     clientID,
+		ExpiresAt:    pair.AccessExpiresAt,
+		RefreshToken: pair.RefreshToken,
+	}
+	replacementRefresh := &RefreshTokenEntry{
+		Token:     pair.RefreshToken,
+		ClientID:  clientID,
+		ExpiresAt: pair.RefreshExpiresAt,
+	}
+	rt.ReplacedAt = now
+	rt.ReplacementAccessToken = pair.AccessToken
+	rt.ReplacementRefreshToken = pair.RefreshToken
+	rt.ReplacementAccessExpiresAt = pair.AccessExpiresAt
+
+	if s.persist != nil {
+		if err := s.persist.rotateRefreshToken(refreshToken, access, replacementRefresh, rt); err != nil {
+			return nil, err
+		}
+	}
+	s.accessTokens[pair.AccessToken] = access
+	s.refreshTokens[pair.RefreshToken] = replacementRefresh
+	s.refreshTokens[refreshToken] = rt
+	return pair, nil
 }
 
 // cleanup removes expired access tokens and refresh tokens.
@@ -183,6 +338,11 @@ func (s *TokenStore) cleanup() {
 	for k, t := range s.refreshTokens {
 		if now.After(t.ExpiresAt) {
 			delete(s.refreshTokens, k)
+		}
+	}
+	if s.persist != nil {
+		if store, ok := s.persist.(*persistentStore); ok {
+			store.cleanup(now)
 		}
 	}
 }

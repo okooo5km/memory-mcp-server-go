@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -308,13 +309,19 @@ func TestFullOAuthFlow(t *testing.T) {
 		t.Error("refresh token should be rotated")
 	}
 
-	// Step 10: Old refresh token should be revoked
+	// Step 10: Immediate old refresh token replay should be tolerated for
+	// concurrent clients sharing the same token cache.
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(refreshForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("reuse refresh: expected 400, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("immediate refresh replay: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var replayResp map[string]any
+	json.NewDecoder(w.Body).Decode(&replayResp)
+	if replayResp["access_token"] != newAccessToken || replayResp["refresh_token"] != newRefreshToken {
+		t.Fatal("refresh replay should return the same replacement token pair")
 	}
 
 	// Step 11: New access token works
@@ -324,6 +331,101 @@ func TestFullOAuthFlow(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("new token: expected 200, got %d", w.Code)
+	}
+}
+
+func TestRefreshReplayExpiresAfterGrace(t *testing.T) {
+	srv, mux := setupTestServer(t)
+	srv.grace = time.Second
+	clientID := registerTestClient(t, mux)
+
+	refreshToken, _ := generateToken(32)
+	srv.tokens.PutRefreshToken(&RefreshTokenEntry{
+		Token:     refreshToken,
+		ClientID:  clientID,
+		ExpiresAt: timeNow().Add(refreshTokenTTL),
+	})
+
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {clientID},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	orig := timeNow
+	timeNow = func() time.Time { return orig().Add(2 * time.Second) }
+	defer func() { timeNow = orig }()
+
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("late refresh replay: expected 400, got %d", w.Code)
+	}
+}
+
+func TestPersistentOAuthStoreSurvivesRestart(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "oauth.db")
+	srv, err := NewOAuthServerWithError(Config{
+		Username:  "admin",
+		Password:  "secret",
+		StorePath: storePath,
+	})
+	if err != nil {
+		t.Fatalf("new persistent oauth server: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux, func(h http.Handler) http.Handler { return h })
+
+	clientID := registerTestClient(t, mux)
+	accessToken, refreshToken := issueTestTokenPair(t, srv, clientID)
+	srv.Close()
+
+	srv2, err := NewOAuthServerWithError(Config{
+		Username:  "admin",
+		Password:  "secret",
+		StorePath: storePath,
+	})
+	if err != nil {
+		t.Fatalf("restart persistent oauth server: %v", err)
+	}
+	defer srv2.Close()
+
+	if _, ok := srv2.clients.Get(clientID); !ok {
+		t.Fatal("registered OAuth client should survive restart")
+	}
+	handler := srv2.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("persisted access token: expected 200, got %d", w.Code)
+	}
+
+	mux2 := http.NewServeMux()
+	srv2.RegisterRoutes(mux2, func(h http.Handler) http.Handler { return h })
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {clientID},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	mux2.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("persisted refresh token: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -395,4 +497,22 @@ func issueTestToken(t *testing.T, srv *OAuthServer, clientID string) string {
 		ExpiresAt: time.Now().Add(accessTokenTTL),
 	})
 	return tok
+}
+
+func issueTestTokenPair(t *testing.T, srv *OAuthServer, clientID string) (string, string) {
+	t.Helper()
+	accessToken, _ := generateToken(32)
+	refreshToken, _ := generateToken(32)
+	srv.tokens.PutAccessToken(&TokenEntry{
+		Token:        accessToken,
+		ClientID:     clientID,
+		ExpiresAt:    timeNow().Add(accessTokenTTL),
+		RefreshToken: refreshToken,
+	})
+	srv.tokens.PutRefreshToken(&RefreshTokenEntry{
+		Token:     refreshToken,
+		ClientID:  clientID,
+		ExpiresAt: timeNow().Add(refreshTokenTTL),
+	})
+	return accessToken, refreshToken
 }

@@ -9,7 +9,7 @@
 - `VERSION`: Single source of truth for release/version strings.
 
 ## Build, Test, and Development Commands
-- `make build`: Build for current platform into `.build/memory-mcp-server-go`.
+- `make build`: Build for current platform into `.build/mms`.
 - `make build-all`: Cross-compile for common OS/ARCH.
 - `make dist`: Package cross builds into `.build/dist`.
 - `make fmt vet check`: Format sources, run `go vet`, and quick sanity checks.
@@ -53,7 +53,7 @@ make fmt && make check && go test ./... && make build
 - Static analysis: `make vet` and `make check` must pass locally.
 - Modules: `go mod tidy` should not change `go.mod`/`go.sum`. If it does, include those changes.
 - Tests: `go test ./...` passes without failures.
-- Quick build: `make build` succeeds and produces `.build/memory-mcp-server-go`.
+- Quick build: `make build` succeeds and produces `.build/mms`.
 - Scope: keep diffs minimal and focused; update README when flags or endpoints change.
 
 ### CI/CD Integration
@@ -94,4 +94,6 @@ make fmt && make check && go test ./... && make build
 
 ## Security & Configuration Tips
 - Configuration via flags and env (e.g., `MEMORY_FILE_PATH`). Do not print secrets.
+- For reverse-proxied HTTP/SSE deployments, bind to localhost with `--host 127.0.0.1` / `MMS_HOST=127.0.0.1`.
+- For remote OAuth deployments, set `--oauth-store` / `OAUTH_STORE_PATH` so OAuth clients and tokens survive restarts.
 - Default builds use pure Go SQLite (`CGO_ENABLED=0`). Respect stdout protocol constraints across transports.

@@ -115,7 +115,7 @@ Tests are available in `storage/search_priority_test.go`:
 
 1. **OAuth Server** (auth/oauth.go):
    - OAuth 2.1 authorization server for MCP
-   - Config, NewOAuthServer(), RegisterRoutes(), Middleware(), Close()
+   - Config, NewOAuthServer(), NewOAuthServerWithError(), RegisterRoutes(), Middleware(), Close()
    - Issuer URL auto-detection from request or explicit config
 
 2. **HTTP Handlers** (auth/handlers.go):
@@ -125,8 +125,10 @@ Tests are available in `storage/search_priority_test.go`:
    - `/authorize` GET/POST — Login page + form submission
    - `/token` — Token issuance (authorization_code) and refresh (refresh_token)
 
-3. **In-Memory Store** (auth/store.go):
+3. **OAuth Store** (auth/store.go, auth/persistent_store.go):
    - ClientStore, CodeStore, TokenStore with sync.RWMutex
+   - Optional SQLite-backed persistence via `--oauth-store` / `OAUTH_STORE_PATH`
+   - Refresh token rotation includes a short replay grace window for concurrent clients
    - Periodic cleanup goroutine (every 15 minutes)
 
 4. **Token & PKCE** (auth/token.go):
@@ -156,6 +158,7 @@ Tests are available in `storage/search_priority_test.go`:
   -t, --transport string     Transport type: stdio or sse (default "stdio")
   -m, --memory string        Memory file path
   -p, --port int            Port for SSE transport (default 8080)
+  --host string             Host/IP to bind for SSE/HTTP transports (env: MMS_HOST)
   -v, --version             Show version
   -h, --help               Show help
 
@@ -174,6 +177,7 @@ Tests are available in `storage/search_priority_test.go`:
   --oauth-user string      OAuth login username (env: OAUTH_USER)
   --oauth-pass string      OAuth login password (env: OAUTH_PASS)
   --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
+  --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
 ```
 

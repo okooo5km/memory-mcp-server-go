@@ -7,10 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -308,10 +310,18 @@ func printUsage() {
 	flag.PrintDefaults()
 }
 
+func formatListenAddr(host string, port int) string {
+	if host == "" {
+		return fmt.Sprintf(":%d", port)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
 func main() {
 	var transport string
 	var memory string
 	var port int = 8080
+	var host string
 	var showVersion bool
 	var showHelp bool
 	var storageType string
@@ -330,6 +340,7 @@ func main() {
 	var oauthUser string
 	var oauthPass string
 	var oauthIssuer string
+	var oauthStore string
 	// CORS options
 	var corsOrigin string
 
@@ -343,6 +354,7 @@ func main() {
 	flag.StringVar(&memory, "m", "", "Path to memory file")
 	flag.IntVar(&port, "port", 8080, "Port for SSE transport")
 	flag.IntVar(&port, "p", 8080, "Port for SSE transport")
+	flag.StringVar(&host, "host", "", "Host/IP to bind for SSE/HTTP transports (env: MMS_HOST, default all interfaces)")
 	flag.BoolVar(&showVersion, "version", false, "Show version information and exit")
 	flag.BoolVar(&showVersion, "v", false, "Show version information and exit")
 	flag.BoolVar(&showHelp, "help", false, "Show this help message and exit")
@@ -369,6 +381,7 @@ func main() {
 	flag.StringVar(&oauthUser, "oauth-user", "", "OAuth login username (env: OAUTH_USER)")
 	flag.StringVar(&oauthPass, "oauth-pass", "", "OAuth login password (env: OAUTH_PASS)")
 	flag.StringVar(&oauthIssuer, "oauth-issuer", "", "OAuth issuer URL, e.g. https://mcp.example.com (auto-detect if empty)")
+	flag.StringVar(&oauthStore, "oauth-store", "", "SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)")
 
 	// CORS flags
 	flag.StringVar(&corsOrigin, "cors-origin", "*", "Allowed CORS origins: '*' for all, or comma-separated list")
@@ -384,6 +397,12 @@ func main() {
 	}
 	if oauthIssuer == "" {
 		oauthIssuer = os.Getenv("OAUTH_ISSUER")
+	}
+	if oauthStore == "" {
+		oauthStore = os.Getenv("OAUTH_STORE_PATH")
+	}
+	if host == "" {
+		host = os.Getenv("MMS_HOST")
 	}
 
 	// Determine if OAuth is enabled
@@ -1396,11 +1415,16 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 	// Create OAuth server if enabled
 	var oauthSrv *auth.OAuthServer
 	if oauthEnabled {
-		oauthSrv = auth.NewOAuthServer(auth.Config{
-			Username: oauthUser,
-			Password: oauthPass,
-			Issuer:   oauthIssuer,
+		var err error
+		oauthSrv, err = auth.NewOAuthServerWithError(auth.Config{
+			Username:  oauthUser,
+			Password:  oauthPass,
+			Issuer:    oauthIssuer,
+			StorePath: oauthStore,
 		})
+		if err != nil {
+			log.Fatal(err)
+		}
 		defer oauthSrv.Close()
 	}
 
@@ -1473,6 +1497,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 	case "sse":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on SSE")
+		listenAddr := formatListenAddr(host, port)
 
 		mux := http.NewServeMux()
 		customSrv := &http.Server{Handler: mux}
@@ -1489,10 +1514,10 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		mux.Handle("/sse", corsWrap(authWrap(sseServer.SSEHandler())))
 		mux.Handle("/message", corsWrap(authWrap(sseServer.MessageHandler())))
 
-		log.Printf("SSE listening on :%d\n", port)
+		log.Printf("SSE listening on %s\n", listenAddr)
 		// Start in background and handle graceful shutdown
 		errCh := make(chan error, 1)
-		go func() { errCh <- sseServer.Start(fmt.Sprintf(":%d", port)) }()
+		go func() { errCh <- sseServer.Start(listenAddr) }()
 		// Wait for signal or server error
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -1511,6 +1536,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 	case "http", "streamable-http":
 		fmt.Fprintln(os.Stderr, "Knowledge Graph MCP Server running on Streamable HTTP")
+		listenAddr := formatListenAddr(host, port)
 		// Parse heartbeat duration
 		hb := 30 * time.Second
 		if d, err := time.ParseDuration(httpHeartbeat); err == nil {
@@ -1532,11 +1558,11 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 		mux.Handle(httpEndpoint, corsWrap(authWrap(streamSrv)))
 
-		log.Printf("Streamable HTTP listening on http://localhost:%d%s\n", port, httpEndpoint)
+		log.Printf("Streamable HTTP listening on %s%s\n", listenAddr, httpEndpoint)
 
 		// Start in background and handle graceful shutdown
 		errCh := make(chan error, 1)
-		go func() { errCh <- streamSrv.Start(fmt.Sprintf(":%d", port)) }()
+		go func() { errCh <- streamSrv.Start(listenAddr) }()
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		select {

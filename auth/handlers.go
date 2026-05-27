@@ -6,6 +6,7 @@ package auth
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -284,55 +285,73 @@ func (s *OAuthServer) handleTokenRefresh(w http.ResponseWriter, r *http.Request)
 	refreshToken := r.FormValue("refresh_token")
 	clientID := r.FormValue("client_id")
 
-	rt, ok := s.tokens.GetRefreshToken(refreshToken)
-	if !ok || timeNow().After(rt.ExpiresAt) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "invalid or expired refresh token"})
+	pair, err := s.tokens.RotateRefreshToken(refreshToken, clientID, timeNow(), s.grace, func() (*TokenPair, error) {
+		return newTokenPair()
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, errRefreshClientMismatch):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "client_id mismatch"})
+		case errors.Is(err, errInvalidRefreshToken):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "invalid or expired refresh token"})
+		default:
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 		return
 	}
-
-	if rt.ClientID != clientID {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "client_id mismatch"})
-		return
-	}
-
-	// Revoke old refresh token (rotation)
-	s.tokens.DeleteRefreshToken(refreshToken)
-
-	// Issue new token pair
-	s.issueTokenPair(w, clientID)
+	s.writeTokenPair(w, pair)
 }
 
 // issueTokenPair generates and returns a new access+refresh token pair.
 func (s *OAuthServer) issueTokenPair(w http.ResponseWriter, clientID string) {
-	accessToken, err := generateToken(32)
+	pair, err := newTokenPair()
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
+	}
+	s.tokens.PutAccessToken(&TokenEntry{
+		Token:        pair.AccessToken,
+		ClientID:     clientID,
+		ExpiresAt:    pair.AccessExpiresAt,
+		RefreshToken: pair.RefreshToken,
+	})
+	s.tokens.PutRefreshToken(&RefreshTokenEntry{
+		Token:     pair.RefreshToken,
+		ClientID:  clientID,
+		ExpiresAt: pair.RefreshExpiresAt,
+	})
+	s.writeTokenPair(w, pair)
+}
+
+func newTokenPair() (*TokenPair, error) {
+	accessToken, err := generateToken(32)
+	if err != nil {
+		return nil, err
 	}
 	refreshToken, err := generateToken(32)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 
 	now := timeNow()
-	s.tokens.PutAccessToken(&TokenEntry{
-		Token:        accessToken,
-		ClientID:     clientID,
-		ExpiresAt:    now.Add(accessTokenTTL),
-		RefreshToken: refreshToken,
-	})
-	s.tokens.PutRefreshToken(&RefreshTokenEntry{
-		Token:     refreshToken,
-		ClientID:  clientID,
-		ExpiresAt: now.Add(refreshTokenTTL),
-	})
+	return &TokenPair{
+		AccessToken:      accessToken,
+		RefreshToken:     refreshToken,
+		AccessExpiresAt:  now.Add(accessTokenTTL),
+		RefreshExpiresAt: now.Add(refreshTokenTTL),
+	}, nil
+}
 
+func (s *OAuthServer) writeTokenPair(w http.ResponseWriter, pair *TokenPair) {
+	expiresIn := int(pair.AccessExpiresAt.Sub(timeNow()).Seconds())
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token":  accessToken,
+		"access_token":  pair.AccessToken,
 		"token_type":    "Bearer",
-		"expires_in":    int(accessTokenTTL.Seconds()),
-		"refresh_token": refreshToken,
+		"expires_in":    expiresIn,
+		"refresh_token": pair.RefreshToken,
 	})
 }
 

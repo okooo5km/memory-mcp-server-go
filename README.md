@@ -108,6 +108,7 @@ mms [options]
   -t, --transport string   Transport type: stdio, sse, or http (default "stdio")
   -m, --memory string      Memory file path (auto-detected if not specified)
   -p, --port int           Port for SSE/HTTP transport (default 8080)
+  --host string            Host/IP to bind for SSE/HTTP transports (env: MMS_HOST, default all interfaces)
   -v, --version            Show version
 
   Storage:
@@ -132,6 +133,7 @@ mms [options]
   --oauth-user string      OAuth login username (env: OAUTH_USER)
   --oauth-pass string      OAuth login password (env: OAUTH_PASS)
   --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
+  --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
 
   CORS:
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
@@ -144,7 +146,7 @@ mms                                          # stdio, auto-detect storage
 mms --memory /path/to/memory.json            # custom path, auto-migrates to SQLite
 mms --transport sse --port 9000              # SSE transport
 mms --transport http --auth-bearer mytoken   # Streamable HTTP with Bearer auth
-mms --transport http --oauth-user admin --oauth-pass secret  # OAuth 2.1 auth
+mms --transport http --host 127.0.0.1 --oauth-user admin --oauth-pass secret --oauth-store /var/lib/mms/oauth.db  # OAuth 2.1 auth
 mms --transport http --cors-origin "https://app.example.com,https://admin.example.com"  # CORS whitelist
 ```
 
@@ -169,10 +171,11 @@ For remote deployment with OAuth 2.1 authentication, compatible with Claude Desk
 
 ```bash
 # Start server with OAuth
-mms --transport http --oauth-user admin --oauth-pass secret --port 8080
+mms --transport http --host 127.0.0.1 --oauth-user admin --oauth-pass secret --oauth-store /var/lib/mms/oauth.db --port 8080
 
 # Or with environment variables and explicit issuer
-OAUTH_USER=admin OAUTH_PASS=secret mms --transport http --oauth-issuer https://mcp.example.com
+OAUTH_USER=admin OAUTH_PASS=secret OAUTH_STORE_PATH=/var/lib/mms/oauth.db \
+  mms --transport http --oauth-issuer https://mcp.example.com
 ```
 
 Then in Claude Desktop: **Settings → Connectors → Add Custom Connector** → enter your server URL (e.g., `https://mcp.example.com/mcp`). Claude will automatically discover the OAuth endpoints and prompt you to log in.
@@ -248,7 +251,7 @@ curl -X DELETE http://localhost:8080/mcp \
 
 - Deploy behind TLS (Nginx/Caddy/Traefik), bind server to localhost
 - **Simple auth**: Use `--auth-bearer $(openssl rand -hex 32)` for programmatic clients
-- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Supports PKCE (S256), dynamic client registration, and token refresh with rotation
+- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Set `--oauth-store` in production so registered clients and tokens survive restarts. Supports PKCE (S256), dynamic client registration, durable token storage, and refresh token rotation with a short replay grace window for concurrent clients
 - Forward `Authorization` header from reverse proxy to backend; set `--oauth-issuer` to the public URL when behind a proxy
 - Run as non-root, open only required ports, enable rate limiting for untrusted clients
 

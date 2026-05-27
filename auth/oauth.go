@@ -5,9 +5,11 @@ package auth
 
 import (
 	"embed"
+	"fmt"
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 )
 
 //go:embed login.html success.html
@@ -18,9 +20,11 @@ var successTmpl = template.Must(template.ParseFS(templateFS, "success.html"))
 
 // Config holds OAuth server configuration.
 type Config struct {
-	Username string // required login username
-	Password string // required login password
-	Issuer   string // optional explicit issuer URL (auto-detected from request if empty)
+	Username           string        // required login username
+	Password           string        // required login password
+	Issuer             string        // optional explicit issuer URL (auto-detected from request if empty)
+	StorePath          string        // optional SQLite path for durable OAuth clients and tokens
+	RefreshReplayGrace time.Duration // optional grace period for concurrent refresh replay
 }
 
 // OAuthServer implements OAuth 2.1 authorization server endpoints for MCP.
@@ -29,25 +33,66 @@ type OAuthServer struct {
 	clients *ClientStore
 	codes   *CodeStore
 	tokens  *TokenStore
+	store   *persistentStore
+	grace   time.Duration
 	stopCh  chan struct{} // stops cleanup goroutine
 }
 
-// NewOAuthServer creates a new OAuth server with in-memory stores.
+// NewOAuthServer creates a new OAuth server. It panics only when an explicitly
+// configured persistent store cannot be opened; production code should prefer
+// NewOAuthServerWithError for a clean startup error.
 func NewOAuthServer(cfg Config) *OAuthServer {
+	srv, err := NewOAuthServerWithError(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return srv
+}
+
+// NewOAuthServerWithError creates a new OAuth server with optional durable storage.
+func NewOAuthServerWithError(cfg Config) (*OAuthServer, error) {
 	codes := newCodeStore()
 	tokens := newTokenStore()
+	clients := newClientStore()
+	var store *persistentStore
+	if cfg.StorePath != "" {
+		var err error
+		store, err = openPersistentStore(cfg.StorePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize OAuth store: %w", err)
+		}
+		clients.persist = store
+		tokens.persist = store
+	}
+	grace := cfg.RefreshReplayGrace
+	if grace <= 0 {
+		grace = 2 * time.Minute
+	}
 	return &OAuthServer{
 		config:  cfg,
-		clients: newClientStore(),
+		clients: clients,
 		codes:   codes,
 		tokens:  tokens,
+		store:   store,
+		grace:   grace,
 		stopCh:  startCleanup(codes, tokens),
-	}
+	}, nil
+}
+
+// StorePath returns the configured durable OAuth store path, if any.
+func (s *OAuthServer) StorePath() string {
+	return s.config.StorePath
+}
+
+// RefreshReplayGrace returns the effective refresh replay grace duration.
+func (s *OAuthServer) RefreshReplayGrace() time.Duration {
+	return s.grace
 }
 
 // Close stops the background cleanup goroutine.
 func (s *OAuthServer) Close() {
 	close(s.stopCh)
+	_ = s.store.close()
 }
 
 // RegisterRoutes registers OAuth endpoints on the given mux.
