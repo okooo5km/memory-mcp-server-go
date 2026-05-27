@@ -251,7 +251,7 @@ curl -X DELETE http://localhost:8080/mcp \
 
 - Deploy behind TLS (Nginx/Caddy/Traefik), bind server to localhost
 - **Simple auth**: Use `--auth-bearer $(openssl rand -hex 32)` for programmatic clients
-- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Set `--oauth-store` in production so registered clients and tokens survive restarts. Supports PKCE (S256), dynamic client registration, durable token storage, and refresh token rotation with a short replay grace window for concurrent clients
+- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Set `--oauth-store` in production so registered clients and tokens survive restarts, and run the service with a restrictive umask such as systemd `UMask=0077` to protect SQLite WAL/SHM files. Supports PKCE (S256), dynamic client registration, durable token storage, and refresh token rotation with a short replay grace window for concurrent clients
 - Forward `Authorization` header from reverse proxy to backend; set `--oauth-issuer` to the public URL when behind a proxy
 - Run as non-root, open only required ports, enable rate limiting for untrusted clients
 

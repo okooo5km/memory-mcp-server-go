@@ -96,4 +96,5 @@ make fmt && make check && go test ./... && make build
 - Configuration via flags and env (e.g., `MEMORY_FILE_PATH`). Do not print secrets.
 - For reverse-proxied HTTP/SSE deployments, bind to localhost with `--host 127.0.0.1` / `MMS_HOST=127.0.0.1`.
 - For remote OAuth deployments, set `--oauth-store` / `OAUTH_STORE_PATH` so OAuth clients and tokens survive restarts.
+- For systemd OAuth deployments, set `UMask=0077` so OAuth SQLite database and sidecar files are private.
 - Default builds use pure Go SQLite (`CGO_ENABLED=0`). Respect stdout protocol constraints across transports.

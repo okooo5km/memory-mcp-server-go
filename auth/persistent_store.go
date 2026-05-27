@@ -39,7 +39,20 @@ func openPersistentStore(path string) (*persistentStore, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := chmodOAuthStoreFiles(path); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &persistentStore{db: db}, nil
+}
+
+func chmodOAuthStoreFiles(path string) error {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("secure oauth store permissions for %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 func createPersistentSchema(db *sql.DB) error {

@@ -128,6 +128,7 @@ Tests are available in `storage/search_priority_test.go`:
 3. **OAuth Store** (auth/store.go, auth/persistent_store.go):
    - ClientStore, CodeStore, TokenStore with sync.RWMutex
    - Optional SQLite-backed persistence via `--oauth-store` / `OAUTH_STORE_PATH`
+   - Persistent OAuth store files are chmodded to `0600`; systemd deployments should also use `UMask=0077`
    - Refresh token rotation includes a short replay grace window for concurrent clients
    - Periodic cleanup goroutine (every 15 minutes)
 

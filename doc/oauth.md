@@ -97,6 +97,8 @@ Without `--oauth-store`, OAuth clients and tokens are stored in memory and are c
   --host 127.0.0.1
 ```
 
+The OAuth store file is forced to `0600` when opened. For systemd deployments, also set `UMask=0077` so SQLite sidecar files such as `oauth.db-wal` and `oauth.db-shm` are created with private permissions.
+
 ## Claude Desktop Integration
 
 1. Start the server with OAuth enabled
@@ -127,6 +129,7 @@ curl -X POST http://localhost:8080/register \
 - PKCE (S256) is supported for secure authorization code exchange
 - All tokens are opaque random strings (not JWT)
 - Use `--oauth-store` in production to persist OAuth clients and tokens across restarts
+- Use a restrictive process umask such as systemd `UMask=0077` for OAuth SQLite sidecar files
 - Refresh token rotation includes a short replay grace window for concurrent refresh attempts
 - Bind HTTP/SSE transports to localhost behind a reverse proxy with `--host 127.0.0.1`
 - For production use, deploy behind HTTPS (TLS termination via reverse proxy)

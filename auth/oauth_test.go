@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -426,6 +428,30 @@ func TestPersistentOAuthStoreSurvivesRestart(t *testing.T) {
 	mux2.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("persisted refresh token: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPersistentOAuthStorePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits are not portable on Windows")
+	}
+	storePath := filepath.Join(t.TempDir(), "oauth.db")
+	srv, err := NewOAuthServerWithError(Config{
+		Username:  "admin",
+		Password:  "secret",
+		StorePath: storePath,
+	})
+	if err != nil {
+		t.Fatalf("new persistent oauth server: %v", err)
+	}
+	defer srv.Close()
+
+	info, err := os.Stat(storePath)
+	if err != nil {
+		t.Fatalf("stat oauth store: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("oauth store permissions: expected 0600, got %03o", got)
 	}
 }
 
