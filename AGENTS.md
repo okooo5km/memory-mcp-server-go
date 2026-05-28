@@ -98,4 +98,5 @@ make fmt && make check && go test ./... && make build
 - For remote OAuth deployments, set `--oauth-store` / `OAUTH_STORE_PATH` so OAuth clients and tokens survive restarts.
 - For systemd OAuth deployments, set `UMask=0077` so OAuth SQLite database and sidecar files are private.
 - For multi-worker clients such as Codex, tune `--oauth-refresh-replay-grace` / `OAUTH_REFRESH_REPLAY_GRACE` when stale refresh-token caches are expected.
+- Streamable HTTP clients may POST JSON-RPC responses to server `ping` messages; these must be acknowledged with `202 Accepted` and no response body.
 - Default builds use pure Go SQLite (`CGO_ENABLED=0`). Respect stdout protocol constraints across transports.

@@ -192,8 +192,8 @@ Tests are available in `storage/search_priority_test.go`:
 
 ## Key Dependencies
 
-- `github.com/mark3labs/mcp-go v0.19.0` - MCP SDK for Go
-- `github.com/mattn/go-sqlite3 v1.14.28` - SQLite driver with CGO
+- `github.com/mark3labs/mcp-go v0.38.0` - MCP SDK for Go
+- `modernc.org/sqlite` - pure Go SQLite driver
 
 ## Migration
 

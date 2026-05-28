@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -26,6 +28,51 @@ import (
 	// Use pure Go SQLite driver
 	_ "modernc.org/sqlite"
 )
+
+// streamableHTTPResponseCompatWrap handles JSON-RPC responses sent by clients
+// over Streamable HTTP. mcp-go v0.38 routes these through its sampling handler,
+// which returns 500 text/plain for ordinary ping responses. MCP requires
+// accepted responses to receive 202 with no body.
+func streamableHTTPResponseCompatWrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		_ = r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+
+		if isJSONRPCClientResponse(raw) {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isJSONRPCClientResponse(raw []byte) bool {
+	var msg struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return false
+	}
+	return msg.JSONRPC == "2.0" &&
+		len(msg.ID) > 0 &&
+		msg.Method == "" &&
+		(len(msg.Result) > 0 || len(msg.Error) > 0)
+}
 
 // Legacy types for backward compatibility with JSON marshaling
 type ObservationAddition struct {
@@ -1570,7 +1617,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		if oauthSrv != nil {
 			oauthSrv.RegisterRoutes(mux, corsWrap)
 		}
-		mux.Handle(httpEndpoint, corsWrap(authWrap(streamSrv)))
+		mux.Handle(httpEndpoint, corsWrap(authWrap(streamableHTTPResponseCompatWrap(streamSrv))))
 
 		log.Printf("Streamable HTTP listening on %s%s\n", listenAddr, httpEndpoint)
 

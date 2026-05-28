@@ -225,6 +225,10 @@ Always check your memory before answering questions that might require past cont
 
 ## Streamable HTTP Usage
 
+The Streamable HTTP endpoint accepts JSON-RPC requests, notifications, and
+responses. Client responses such as replies to server `ping` messages are
+acknowledged with `202 Accepted` and no body, per the MCP transport spec.
+
 ```bash
 # 1. Initialize session
 curl -i -X POST http://localhost:8080/mcp \
