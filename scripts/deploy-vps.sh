@@ -950,23 +950,34 @@ verify_public() {
   log "Verifying the public endpoint"
   local resolve="${DOMAIN}:443:127.0.0.1"
   local meta="https://${DOMAIN}/.well-known/oauth-protected-resource/mcp"
-  local trusted=true code
+  local trusted=false reachable=false code
 
-  if ! curl -fsS --max-time 10 --resolve "${resolve}" -o /dev/null "${meta}" 2>/dev/null; then
-    if curl -fsS -k --max-time 10 --resolve "${resolve}" -o /dev/null "${meta}" 2>/dev/null; then
-      trusted=false
-      warn "HTTPS works but the certificate is not trusted by this host (expected for self-signed or --staging certificates)."
-    else
-      warn "Could not fetch ${meta} through nginx. Check: nginx -t, journalctl -u nginx, journalctl -u mms."
-      return 0
+  # nginx reloads asynchronously, so old workers may still answer for a moment
+  # (on a fresh install they don't listen on 443 at all yet).
+  for _ in 1 2 3 4 5 6 7 8; do
+    if curl -fsS --max-time 10 --resolve "${resolve}" -o /dev/null "${meta}" 2>/dev/null; then
+      reachable=true
+      trusted=true
+      break
     fi
+    if curl -fsS -k --max-time 10 --resolve "${resolve}" -o /dev/null "${meta}" 2>/dev/null; then
+      reachable=true
+      break
+    fi
+    sleep 1
+  done
+  if [ "${reachable}" = false ]; then
+    warn "Could not fetch ${meta} through nginx. Check: nginx -t, journalctl -u nginx, journalctl -u mms."
+    return 0
+  fi
+  if [ "${trusted}" = false ]; then
+    warn "HTTPS works but the certificate is not trusted by this host (expected for self-signed or --staging certificates)."
   fi
 
   local k=()
   if [ "${trusted}" = false ]; then
     k=(-k)
   fi
-  # nginx reloads asynchronously, so old workers may still answer for a moment.
   for _ in 1 2 3 4 5; do
     code=$(curl -sS "${k[@]}" --max-time 10 --resolve "${resolve}" -o /dev/null -w '%{http_code}' \
       -X POST -H 'Content-Type: application/json' -d '{}' "https://${DOMAIN}/mcp" 2>/dev/null || true)
