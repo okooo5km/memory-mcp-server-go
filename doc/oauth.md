@@ -1,6 +1,6 @@
 # OAuth 2.1 Authentication Guide
 
-Memory MCP Server supports OAuth 2.1 authentication, compatible with Claude Desktop Connectors and other MCP clients that implement the OAuth flow. For a ready-made HTTPS deployment (nginx, Let's Encrypt, systemd) see [deploy.md](deploy.md).
+Memory MCP Server supports OAuth 2.1 authentication, compatible with Claude Desktop Connectors and other MCP clients that implement the OAuth flow. For a ready-made HTTPS deployment (nginx, Let's Encrypt, systemd) see [deploy.md](deploy.md); for Docker, Caddy, Traefik or an existing proxy see [deploy-custom.md](deploy-custom.md).
 
 ## Quick Start
 
@@ -31,6 +31,7 @@ export MEMORY_FILE_PATH=/var/lib/mms/memory.db
 | `--oauth-issuer` | `OAUTH_ISSUER` | Alias of `--public-url` |
 | `--oauth-store` | `OAUTH_STORE_PATH` | SQLite store for durable OAuth clients, access tokens, and refresh tokens |
 | `--oauth-refresh-replay-grace` | `OAUTH_REFRESH_REPLAY_GRACE` | Duration to accept replay of a rotated refresh token (default `75m`) |
+| `--trusted-proxies` | `MMS_TRUSTED_PROXIES` | Comma-separated CIDRs or bare IPs of reverse proxies whose `X-Real-IP` header is trusted for rate limiting. Loopback is always trusted. An invalid value is a fatal startup error |
 
 Both `--oauth-user` and `--oauth-pass` must be provided together to enable OAuth. Flags win over environment variables. Use a password of at least 12 characters; the server warns on shorter ones.
 
@@ -108,7 +109,7 @@ The server keeps a replay grace window for refresh token rotation. If multiple c
 - Request bodies on the OAuth endpoints are capped at 64 KiB.
 - The login form (`POST /authorize`) rejects cross-origin browser submissions.
 
-Behind a reverse proxy on loopback the client address is taken from the `X-Real-IP` header (nginx sets it); the deployment script's nginx configuration also rate limits these endpoints.
+The client address is the TCP peer, except that `X-Real-IP` is believed when the peer is loopback (a proxy on the same host: nginx, Caddy, cloudflared) or inside `--trusted-proxies` (a proxy in another container or host, for example `--trusted-proxies 172.20.0.0/16`). From any other peer the header is ignored, so it cannot be forged to dodge or poison the limits. An unparsable header falls back to the peer; `X-Forwarded-For` is never used. Your proxy must overwrite `X-Real-IP` with the real client address. Without `--trusted-proxies`, a proxy in another container or host makes every user share the proxy's address, and five failed logins lock out everybody; the server logs a warning when OAuth is enabled on a non-loopback bind with none configured. The deployment script's nginx configuration also rate limits these endpoints.
 
 ### Durable Token Storage
 

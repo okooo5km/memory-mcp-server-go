@@ -1406,26 +1406,103 @@ func TestRegistrationThrottling(t *testing.T) {
 	}
 }
 
-func TestClientIPTrustsXRealIPOnlyFromLoopback(t *testing.T) {
+func TestClientIP(t *testing.T) {
+	trusted, err := ParseTrustedProxies("172.20.0.0/16, 10.1.2.3, fd00::/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		remote  string
+		xri     string
+		trusted []netip.Prefix
+		want    string
+	}{
+		{"loopback v4 peer honours header", "127.0.0.1:5000", "203.0.113.9", nil, "203.0.113.9"},
+		{"loopback v6 peer honours header", "[::1]:5000", "203.0.113.9", nil, "203.0.113.9"},
+		{"untrusted peer ignores spoofed header", "198.51.100.1:5000", "203.0.113.9", nil, "198.51.100.1"},
+		{"untrusted peer with list ignores header", "198.51.100.1:5000", "203.0.113.9", trusted, "198.51.100.1"},
+		{"trusted CIDR peer honours header", "172.20.0.5:5000", "203.0.113.9", trusted, "203.0.113.9"},
+		{"trusted bare IP peer honours header", "10.1.2.3:5000", "203.0.113.9", trusted, "203.0.113.9"},
+		{"neighbour of bare IP is not trusted", "10.1.2.4:5000", "203.0.113.9", trusted, "10.1.2.4"},
+		{"trusted v6 peer honours v6 header", "[fd00::5]:5000", "2001:db8::1", trusted, "2001:db8::1"},
+		{"trusted peer without header uses peer", "172.20.0.5:5000", "", trusted, "172.20.0.5"},
+		{"invalid header falls back to loopback peer", "127.0.0.1:5000", "garbage", nil, "127.0.0.1"},
+		{"invalid header falls back to trusted peer", "172.20.0.5:5000", "not-an-ip", trusted, "172.20.0.5"},
+		{"list header is invalid", "172.20.0.5:5000", "203.0.113.9, 198.51.100.1", trusted, "172.20.0.5"},
+		{"header is trimmed", "172.20.0.5:5000", "  203.0.113.9 ", trusted, "203.0.113.9"},
+		{"mapped header is unmapped", "172.20.0.5:5000", "::ffff:203.0.113.9", trusted, "203.0.113.9"},
+		{"mapped peer matches v4 prefix", "[::ffff:172.20.0.5]:5000", "203.0.113.9", trusted, "203.0.113.9"},
+		{"mapped loopback peer is loopback", "[::ffff:127.0.0.1]:5000", "203.0.113.9", nil, "203.0.113.9"},
+		{"mapped untrusted peer is unmapped key", "[::ffff:198.51.100.1]:5000", "203.0.113.9", trusted, "198.51.100.1"},
+		{"peer without port", "172.20.0.5", "203.0.113.9", trusted, "203.0.113.9"},
+		{"unparsable peer is returned as is", "pipe", "203.0.113.9", trusted, "pipe"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = c.remote
+			if c.xri != "" {
+				r.Header.Set("X-Real-IP", c.xri)
+			}
+			r.Header.Set("X-Forwarded-For", "192.0.2.77") // must never be used
+			if got := clientIP(r, c.trusted); got != c.want {
+				t.Errorf("clientIP = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseTrustedProxies(t *testing.T) {
+	ok := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"   ", nil},
+		{"10.0.0.1", []string{"10.0.0.1/32"}},
+		{"10.0.0.0/8", []string{"10.0.0.0/8"}},
+		{"10.1.2.3/8", []string{"10.0.0.0/8"}},
+		{" 172.20.0.0/16 , ::1 ,fd00::/8", []string{"172.20.0.0/16", "::1/128", "fd00::/8"}},
+		{"::ffff:10.0.0.1", []string{"10.0.0.1/32"}},
+		{"::ffff:10.0.0.0/104", []string{"10.0.0.0/8"}},
+	}
+	for _, c := range ok {
+		got, err := ParseTrustedProxies(c.in)
+		if err != nil {
+			t.Errorf("%q: %v", c.in, err)
+			continue
+		}
+		var s []string
+		for _, p := range got {
+			s = append(s, p.String())
+		}
+		if strings.Join(s, " ") != strings.Join(c.want, " ") {
+			t.Errorf("%q = %v, want %v", c.in, s, c.want)
+		}
+	}
+	for _, in := range []string{"nope", "10.0.0.0/33", "10.0.0.1,", ",10.0.0.1", "10.0.0.1,,10.0.0.2", "10.0.0.1/", "fe80::1%eth0", "::ffff:0:0/80", "example.com"} {
+		if _, err := ParseTrustedProxies(in); err == nil {
+			t.Errorf("%q: expected error", in)
+		}
+	}
+}
+
+func TestLoginLimiterUsesTrustedProxyHeader(t *testing.T) {
+	trusted, _ := ParseTrustedProxies("172.20.0.0/16")
+	s := NewOAuthServer(Config{Username: "u", Password: "p", TrustedProxies: trusted})
+	defer s.Close()
 	mk := func(remote, xri string) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = remote
-		if xri != "" {
-			r.Header.Set("X-Real-IP", xri)
-		}
+		r.Header.Set("X-Real-IP", xri)
 		return r
 	}
-	if got := clientIP(mk("127.0.0.1:5000", "203.0.113.9")); got != "203.0.113.9" {
-		t.Errorf("loopback proxy: %s", got)
+	if got := s.clientIP(mk("172.20.0.2:1", "203.0.113.7")); got != "203.0.113.7" {
+		t.Errorf("trusted proxy: %s", got)
 	}
-	if got := clientIP(mk("[::1]:5000", "203.0.113.9")); got != "203.0.113.9" {
-		t.Errorf("ipv6 loopback proxy: %s", got)
-	}
-	if got := clientIP(mk("198.51.100.1:5000", "203.0.113.9")); got != "198.51.100.1" {
-		t.Errorf("spoofed header must be ignored: %s", got)
-	}
-	if got := clientIP(mk("127.0.0.1:5000", "garbage")); got != "127.0.0.1" {
-		t.Errorf("garbage header: %s", got)
+	if got := s.clientIP(mk("172.21.0.2:1", "203.0.113.7")); got != "172.21.0.2" {
+		t.Errorf("untrusted proxy: %s", got)
 	}
 }
 

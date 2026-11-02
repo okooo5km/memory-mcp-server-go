@@ -81,7 +81,7 @@ func (s *OAuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if ok, wait := s.regLimiter.take(clientIP(r)); !ok {
+	if ok, wait := s.regLimiter.take(s.clientIP(r)); !ok {
 		writeRateLimited(w, wait)
 		return
 	}
@@ -342,7 +342,7 @@ func (s *OAuthServer) handleAuthorizePOST(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	okKey, waitKey := s.loginLimiter.check(ip)
 	okGlobal, waitGlobal := s.globalLimiter.check(globalLimiterKey)
 	if !okKey || !okGlobal {

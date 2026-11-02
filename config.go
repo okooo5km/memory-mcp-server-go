@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -34,6 +35,7 @@ type flagValues struct {
 	OAuthStore              string
 	OAuthRefreshReplayGrace string
 	CORSOrigin              string
+	TrustedProxies          string
 }
 
 // appConfig is the effective configuration after merging flags, environment
@@ -56,6 +58,7 @@ type appConfig struct {
 	OAuthStoreDefault  bool // OAuthStore must be derived from the memory path (see setDefaultOAuthStore)
 	RefreshReplayGrace time.Duration
 	CORSOrigin         string
+	TrustedProxies     []netip.Prefix // peers whose X-Real-IP is believed (loopback is always trusted)
 }
 
 // OAuthEnabled reports whether OAuth login credentials were configured.
@@ -238,6 +241,12 @@ func resolveConfig(explicit map[string]bool, getenv func(string) string, f flagV
 	if v, ok := explicitOrEnv("cors-origin", f.CORSOrigin, "MMS_CORS_ORIGIN"); ok {
 		c.CORSOrigin = v
 	}
+
+	// Trusted proxies.
+	c.TrustedProxies, err = auth.ParseTrustedProxies(firstNonEmpty(f.TrustedProxies, "MMS_TRUSTED_PROXIES"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid trusted proxies (--trusted-proxies / MMS_TRUSTED_PROXIES): %w", err)
+	}
 	return c, nil
 }
 
@@ -262,6 +271,9 @@ func (c *appConfig) Warnings() []string {
 		}
 		if len(c.OAuthPass) < 12 {
 			w = append(w, "OAuth password is shorter than 12 characters; use a longer one (prefer the OAUTH_PASS environment variable).")
+		}
+		if len(c.TrustedProxies) == 0 && !isLoopbackListenHost(c.Host) {
+			w = append(w, "OAuth is enabled, the server is not bound to loopback and no trusted proxies are set: if a reverse proxy in another container or host sits in front, the login rate limiter sees only the proxy's address, so a few failed logins lock out every user. Set --trusted-proxies / MMS_TRUSTED_PROXIES to the proxy's address or subnet.")
 		}
 		if c.OAuthStore == "" {
 			w = append(w, "OAuth store is in memory: clients must log in again after every restart. Set --oauth-store / OAUTH_STORE_PATH.")

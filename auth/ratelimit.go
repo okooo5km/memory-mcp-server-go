@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
@@ -128,24 +129,86 @@ func (l *rateLimiter) size() int {
 	return len(l.hits)
 }
 
+// ParseTrustedProxies parses a comma-separated list of CIDRs and bare IP
+// addresses (a bare IP is a single-address prefix). An empty or blank string
+// yields no entries; an empty element between commas or any malformed entry is
+// an error so a typo can never silently widen or narrow the trust set.
+func ParseTrustedProxies(list string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(list) == "" {
+		return nil, nil
+	}
+	var out []netip.Prefix
+	for _, raw := range strings.Split(list, ",") {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			return nil, fmt.Errorf("empty entry in trusted proxy list %q", list)
+		}
+		var p netip.Prefix
+		if strings.Contains(item, "/") {
+			var err error
+			if p, err = netip.ParsePrefix(item); err != nil {
+				return nil, fmt.Errorf("invalid trusted proxy %q: %w", item, err)
+			}
+		} else {
+			a, err := netip.ParseAddr(item)
+			if err != nil {
+				return nil, fmt.Errorf("invalid trusted proxy %q: not an IP address or CIDR", item)
+			}
+			if a.Zone() != "" {
+				return nil, fmt.Errorf("invalid trusted proxy %q: zones are not supported", item)
+			}
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		// Store IPv4-mapped IPv6 prefixes as plain IPv4 so they match the
+		// unmapped peer address.
+		if a := p.Addr(); a.Is4In6() {
+			if p.Bits() < 96 {
+				return nil, fmt.Errorf("invalid trusted proxy %q: IPv4-mapped prefix shorter than /96", item)
+			}
+			p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
+}
+
 // clientIP returns the address used to key throttling.
 //
-// X-Real-IP is honoured only when the TCP peer is a loopback address, i.e. a
-// reverse proxy running on the same host (nginx, caddy, cloudflared) that sets
-// the header itself. Any other peer could forge the header to dodge or poison
-// limits, so for those we use the real peer address. X-Forwarded-For is never
-// trusted because it is client-appendable.
-func clientIP(r *http.Request) string {
+// X-Real-IP is honoured only when the TCP peer is a loopback address (a
+// reverse proxy on the same host: nginx, caddy, cloudflared) or falls inside
+// one of the trusted proxy prefixes (a proxy in another container or host),
+// because those proxies set the header themselves. Any other peer could forge
+// the header to dodge or poison limits, so for those we use the real peer
+// address and ignore the header. An unparsable header also falls back to the
+// peer. X-Forwarded-For is never trusted because it is client-appendable.
+func clientIP(r *http.Request, trusted []netip.Prefix) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if addr, err := netip.ParseAddr(host); err == nil && addr.Unmap().IsLoopback() {
+	peer, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	peer = peer.WithZone("").Unmap()
+	if isTrustedPeer(peer, trusted) {
 		if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
 			if a, err := netip.ParseAddr(xr); err == nil {
-				return a.Unmap().String()
+				return a.WithZone("").Unmap().String()
 			}
 		}
 	}
-	return host
+	return peer.String()
+}
+
+func isTrustedPeer(peer netip.Addr, trusted []netip.Prefix) bool {
+	if peer.IsLoopback() {
+		return true
+	}
+	for _, p := range trusted {
+		if p.Contains(peer) {
+			return true
+		}
+	}
+	return false
 }

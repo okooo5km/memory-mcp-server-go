@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/netip"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +41,9 @@ type Config struct {
 	ResourcePath       string        // MCP endpoint path (default "/mcp")
 	StorePath          string        // optional SQLite path for durable OAuth clients and tokens
 	RefreshReplayGrace time.Duration // optional grace period for concurrent refresh replay
+	// TrustedProxies lists the peers (besides loopback, which is always
+	// trusted) whose X-Real-IP header is believed when keying rate limits.
+	TrustedProxies []netip.Prefix
 }
 
 // OAuthServer implements OAuth 2.1 authorization server endpoints for MCP.
@@ -130,6 +134,11 @@ func NewOAuthServerWithError(cfg Config) (*OAuthServer, error) {
 	}
 	s.stopCh = startCleanup(codes, tokens, s.loginLimiter.cleanup, s.globalLimiter.cleanup, s.regLimiter.cleanup, s.cimd.cleanup)
 	return s, nil
+}
+
+// clientIP returns the address used to key throttling for r.
+func (s *OAuthServer) clientIP(r *http.Request) string {
+	return clientIP(r, s.config.TrustedProxies)
 }
 
 // StorePath returns the configured durable OAuth store path, if any.

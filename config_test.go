@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"memory-mcp-server-go/auth"
 )
 
 func envFrom(m map[string]string) func(string) string {
@@ -274,6 +276,46 @@ func TestResolveConfig(t *testing.T) {
 	}
 }
 
+func TestResolveConfigTrustedProxies(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		flag    string
+		want    []string
+		wantErr bool
+	}{
+		{name: "unset"},
+		{name: "env", env: map[string]string{"MMS_TRUSTED_PROXIES": "172.20.0.0/16,10.0.0.5"}, want: []string{"172.20.0.0/16", "10.0.0.5/32"}},
+		{name: "flag wins over env", env: map[string]string{"MMS_TRUSTED_PROXIES": "10.0.0.5"}, flag: "192.168.0.0/24", want: []string{"192.168.0.0/24"}},
+		{name: "invalid env", env: map[string]string{"MMS_TRUSTED_PROXIES": "caddy"}, wantErr: true},
+		{name: "invalid flag", flag: "10.0.0.0/99", wantErr: true},
+		{name: "empty element", flag: "10.0.0.1,,10.0.0.2", wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fv := defaultFlags()
+			fv.TrustedProxies = c.flag
+			cfg, err := resolveConfig(map[string]bool{}, envFrom(c.env), fv)
+			if c.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "trusted proxies") {
+					t.Fatalf("error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, p := range cfg.TrustedProxies {
+				got = append(got, p.String())
+			}
+			if strings.Join(got, " ") != strings.Join(c.want, " ") {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestExplicitFlagsCanonicalizesAliases(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	var s string
@@ -326,6 +368,23 @@ func TestWarnings(t *testing.T) {
 	c.Host = "127.0.0.1"
 	if has(c, "auto-detected") {
 		t.Errorf("loopback bind should not warn about issuer")
+	}
+	c = base()
+	c.Host = "0.0.0.0"
+	if !has(c, "trusted proxies") {
+		t.Errorf("expected trusted proxies warning: %v", c.Warnings())
+	}
+	c.Host = ""
+	if !has(c, "trusted proxies") {
+		t.Errorf("all-interfaces bind should warn about trusted proxies")
+	}
+	c.TrustedProxies, _ = auth.ParseTrustedProxies("172.20.0.0/16")
+	if has(c, "trusted proxies") {
+		t.Errorf("configured trusted proxies should not warn")
+	}
+	c = base()
+	if has(c, "trusted proxies") {
+		t.Errorf("loopback bind should not warn about trusted proxies")
 	}
 	c = base()
 	c.OAuthPass = "short"

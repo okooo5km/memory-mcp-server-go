@@ -368,6 +368,8 @@ func main() {
 	// CORS flags
 	flag.StringVar(&fv.CORSOrigin, "cors-origin", "*", "Allowed CORS origins: '*' for all, or comma-separated list (env: MMS_CORS_ORIGIN)")
 
+	flag.StringVar(&fv.TrustedProxies, "trusted-proxies", "", "Comma-separated CIDRs or IPs of reverse proxies whose X-Real-IP header is trusted for rate limiting; loopback is always trusted (env: MMS_TRUSTED_PROXIES)")
+
 	flag.Parse()
 
 	if showVersion {
@@ -458,6 +460,7 @@ func run(ctx context.Context, cfg *appConfig, manager *KnowledgeGraphManager) er
 			ResourcePath:       cfg.MCPPath(),
 			StorePath:          cfg.OAuthStore,
 			RefreshReplayGrace: cfg.RefreshReplayGrace,
+			TrustedProxies:     cfg.TrustedProxies,
 		})
 		if err != nil {
 			return err
