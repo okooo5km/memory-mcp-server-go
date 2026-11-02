@@ -222,6 +222,20 @@ func (s *persistentStore) deleteRefreshToken(token string) error {
 	return err
 }
 
+func (s *persistentStore) deleteAccessTokensByRefresh(refreshToken string) error {
+	_, err := s.db.Exec("DELETE FROM oauth_access_tokens WHERE refresh_token = ?", refreshToken)
+	return err
+}
+
+func (s *persistentStore) findReplacedRefresh(replacementRefresh string) (string, bool) {
+	var token string
+	err := s.db.QueryRow("SELECT token FROM oauth_refresh_tokens WHERE replacement_refresh_token = ? LIMIT 1", replacementRefresh).Scan(&token)
+	if err != nil {
+		return "", false
+	}
+	return token, true
+}
+
 func (s *persistentStore) rotateRefreshToken(oldRefreshToken string, access *TokenEntry, replacementRefresh *RefreshTokenEntry, oldRefresh *RefreshTokenEntry) error {
 	tx, err := s.db.Begin()
 	if err != nil {

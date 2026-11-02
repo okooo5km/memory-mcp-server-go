@@ -12,6 +12,7 @@ import (
 var (
 	errInvalidRefreshToken   = errors.New("invalid or expired refresh token")
 	errRefreshClientMismatch = errors.New("client_id mismatch")
+	errInvalidAuthCode       = errors.New("invalid, expired or already used authorization code")
 )
 
 // OAuthClient represents a dynamically registered OAuth client (RFC 7591).
@@ -37,6 +38,8 @@ type persistentTokenStore interface {
 	putRefreshToken(*RefreshTokenEntry) error
 	getRefreshToken(token string) (*RefreshTokenEntry, bool)
 	deleteRefreshToken(token string) error
+	deleteAccessTokensByRefresh(refreshToken string) error
+	findReplacedRefresh(replacementRefresh string) (string, bool)
 	rotateRefreshToken(oldRefreshToken string, access *TokenEntry, replacementRefresh *RefreshTokenEntry, oldRefresh *RefreshTokenEntry) error
 }
 
@@ -47,6 +50,7 @@ type AuthorizationCode struct {
 	RedirectURI         string
 	CodeChallenge       string
 	CodeChallengeMethod string // "S256"
+	Resource            string // RFC 8707 resource requested at /authorize (trailing slash trimmed)
 	State               string
 	ExpiresAt           time.Time
 	Used                bool
@@ -91,13 +95,18 @@ func newClientStore() *ClientStore {
 	return &ClientStore{clients: make(map[string]*OAuthClient)}
 }
 
-func (s *ClientStore) Put(c *OAuthClient) {
+// Put stores a client. When a persistent store is configured the client is
+// written there first, and a failure is returned instead of being dropped.
+func (s *ClientStore) Put(c *OAuthClient) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.clients[c.ClientID] = c
 	if s.persist != nil {
-		_ = s.persist.putClient(c)
+		if err := s.persist.putClient(c); err != nil {
+			return err
+		}
 	}
+	s.clients[c.ClientID] = c
+	return nil
 }
 
 func (s *ClientStore) Get(clientID string) (*OAuthClient, bool) {
@@ -141,12 +150,19 @@ func (s *CodeStore) Get(code string) (*AuthorizationCode, bool) {
 	return c, ok
 }
 
-func (s *CodeStore) MarkUsed(code string) {
+// Consume atomically validates and redeems an authorization code: under one
+// lock it checks existence, the Used flag and expiry, then marks the code
+// used. Exactly one concurrent caller can succeed. The returned value is a copy.
+func (s *CodeStore) Consume(code string, now time.Time) (*AuthorizationCode, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.codes[code]; ok {
-		c.Used = true
+	c, ok := s.codes[code]
+	if !ok || c.Used || now.After(c.ExpiresAt) {
+		return nil, errInvalidAuthCode
 	}
+	c.Used = true
+	cp := *c
+	return &cp, nil
 }
 
 func (s *CodeStore) Delete(code string) {
@@ -254,6 +270,71 @@ func (s *TokenStore) DeleteRefreshToken(token string) {
 	}
 }
 
+// lookupRefreshLocked finds a refresh token in memory or the persistent store.
+func (s *TokenStore) lookupRefreshLocked(token string) (*RefreshTokenEntry, bool) {
+	if rt, ok := s.refreshTokens[token]; ok {
+		return rt, true
+	}
+	if s.persist != nil {
+		return s.persist.getRefreshToken(token)
+	}
+	return nil, false
+}
+
+// predecessorLocked returns the refresh token that was rotated into token.
+func (s *TokenStore) predecessorLocked(token string) string {
+	for k, rt := range s.refreshTokens {
+		if rt.ReplacementRefreshToken == token {
+			return k
+		}
+	}
+	if s.persist != nil {
+		if k, ok := s.persist.findReplacedRefresh(token); ok {
+			return k
+		}
+	}
+	return ""
+}
+
+// RevokeRefreshToken revokes a refresh token together with every access token
+// linked to it (RFC 7009 section 2.1). Because rotation chains refresh tokens,
+// the whole chain (earlier and later members) is revoked, so a replay inside
+// the grace window cannot resurrect the session.
+func (s *TokenStore) RevokeRefreshToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	chain := map[string]bool{}
+	for cur := token; cur != "" && !chain[cur]; {
+		chain[cur] = true
+		rt, ok := s.lookupRefreshLocked(cur)
+		if !ok {
+			break
+		}
+		cur = rt.ReplacementRefreshToken
+	}
+	for cur := token; cur != ""; {
+		pred := s.predecessorLocked(cur)
+		if pred == "" || chain[pred] {
+			break
+		}
+		chain[pred] = true
+		cur = pred
+	}
+	for rtk := range chain {
+		for k, at := range s.accessTokens {
+			if at.RefreshToken == rtk {
+				delete(s.accessTokens, k)
+			}
+		}
+		delete(s.refreshTokens, rtk)
+		if s.persist != nil {
+			_ = s.persist.deleteAccessTokensByRefresh(rtk)
+			_ = s.persist.deleteRefreshToken(rtk)
+		}
+	}
+}
+
 // RotateRefreshToken atomically rotates a refresh token. The replay grace window
 // returns the same replacement pair for stale or concurrent refresh attempts from
 // clients that share token cache state imperfectly.
@@ -350,7 +431,7 @@ func (s *TokenStore) cleanup() {
 }
 
 // startCleanup runs periodic cleanup of expired entries. Returns a stop channel.
-func startCleanup(codes *CodeStore, tokens *TokenStore) chan struct{} {
+func startCleanup(codes *CodeStore, tokens *TokenStore, extra ...func()) chan struct{} {
 	stop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
@@ -360,6 +441,9 @@ func startCleanup(codes *CodeStore, tokens *TokenStore) chan struct{} {
 			case <-ticker.C:
 				codes.cleanup()
 				tokens.cleanup()
+				for _, fn := range extra {
+					fn()
+				}
 			case <-stop:
 				return
 			}

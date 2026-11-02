@@ -70,7 +70,7 @@
   <p>You have been authorized. Returning to the application...</p>
   <p class="hint">If this page doesn't redirect automatically, you can safely close this window.</p>
 </div>
-<script>
+<script nonce="{{.Nonce}}">
   (function() {
     var url = {{.RedirectURL}};
     // Try to close the window first (works if opened by the app)

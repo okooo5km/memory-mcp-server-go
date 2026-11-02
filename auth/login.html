@@ -35,6 +35,19 @@
     text-align: center;
     margin-bottom: 24px;
   }
+  .client {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: #555;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+  .client .tag { color: #999; font-size: 12px; }
+  .client code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #333; }
   .error {
     background: #fef2f2;
     color: #b91c1c;
@@ -86,6 +99,10 @@
 <div class="card">
   <h1>Memory MCP Server</h1>
   <p class="subtitle">Sign in to authorize access</p>
+  <div class="client">
+    <div>{{if .ClientName}}<strong>{{.ClientName}}</strong> <span class="tag">(name declared by the application)</span>{{else}}An application{{end}} is requesting access to your memory.</div>
+    <div>After sign-in you will be sent to <code>{{.RedirectHost}}</code></div>
+  </div>
   <div class="error">{{.Error}}</div>
   <form method="POST" action="/authorize">
     <input type="hidden" name="client_id" value="{{.ClientID}}">
@@ -94,7 +111,7 @@
     <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
     <input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}">
     <input type="hidden" name="response_type" value="{{.ResponseType}}">
-    <input type="hidden" name="scope" value="{{.Scope}}">
+    <input type="hidden" name="resource" value="{{.Resource}}">
     <label for="username">Username</label>
     <input type="text" id="username" name="username" autocomplete="username" required autofocus>
     <label for="password">Password</label>
