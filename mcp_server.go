@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,7 +20,9 @@ import (
 )
 
 // JSON schema helpers. The tool input schemas are written out by hand so the
-// wire format stays identical to what earlier releases advertised.
+// wire format stays what earlier releases advertised. The one change is that
+// create_entities no longer requires observations, which those releases never
+// enforced.
 
 func strSchema(desc string) map[string]any {
 	return map[string]any{"type": "string", "description": desc}
@@ -88,6 +91,55 @@ func recoveryMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		}()
 		return next(ctx, method, req)
 	}
+}
+
+// nullArgumentsMiddleware removes null-valued object members from tool call
+// arguments before the SDK validates them. Many clients send null for an
+// omitted optional parameter, and the advertised schemas stay single-typed
+// because some clients cannot handle union types.
+func nullArgumentsMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		if method == "tools/call" {
+			if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && bytes.Contains(params.Arguments, []byte("null")) {
+				params.Arguments = stripNullMembers(params.Arguments)
+			}
+		}
+		return next(ctx, method, req)
+	}
+}
+
+// stripNullMembers returns raw without null-valued object members, at any depth.
+// Input that does not parse is returned as is, for the SDK to reject.
+func stripNullMembers(raw json.RawMessage) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber() // keep numbers exactly as sent
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(dropNullMembers(v))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func dropNullMembers(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, member := range t {
+			if member == nil {
+				delete(t, k)
+			} else {
+				t[k] = dropNullMembers(member)
+			}
+		}
+	case []any:
+		for i, item := range t {
+			t[i] = dropNullMembers(item)
+		}
+	}
+	return v
 }
 
 // Tool argument types.
@@ -164,7 +216,7 @@ func newMCPServerWithKeepAlive(manager *KnowledgeGraphManager, keepAlive time.Du
 	s := mcp.NewServer(&mcp.Implementation{Name: appName, Version: version}, &mcp.ServerOptions{
 		KeepAlive: keepAlive,
 	})
-	s.AddReceivingMiddleware(recoveryMiddleware)
+	s.AddReceivingMiddleware(recoveryMiddleware, nullArgumentsMiddleware)
 
 	addResources(s, manager)
 	addPrompts(s, manager)
@@ -426,11 +478,16 @@ EXAMPLE:
 				"name":         strSchema("Unique name for the entity. Check with search_nodes first to avoid duplicates."),
 				"entityType":   strSchema("Category of the entity (e.g. person, technology, project, concept, preference, organization)"),
 				"observations": strArraySchema("Atomic facts about the entity. Each observation should be a single, self-contained statement."),
-			}, "name", "entityType", "observations")),
+			}, "name", "entityType")),
 		}, "entities"),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, arg createEntitiesArgs) (*mcp.CallToolResult, any, error) {
 		if len(arg.Entities) == 0 {
 			return nil, nil, errors.New("missing required parameter: entities")
+		}
+		for i := range arg.Entities {
+			if arg.Entities[i].Observations == nil {
+				arg.Entities[i].Observations = []string{}
+			}
 		}
 		newEntities, err := manager.CreateEntities(arg.Entities)
 		if err != nil {

@@ -235,7 +235,7 @@ func TestListFeatures(t *testing.T) {
 	}
 	// Nested required lists for the array-of-object tools.
 	nested := map[string][]string{
-		"create_entities":     {"name", "entityType", "observations"},
+		"create_entities":     {"name", "entityType"},
 		"create_relations":    {"from", "to", "relationType"},
 		"add_observations":    {"entityName", "contents"},
 		"delete_observations": {"entityName", "observations"},
@@ -294,6 +294,49 @@ func TestListFeatures(t *testing.T) {
 	wantPrompts := map[string]string{"memory-recall": "topic", "memory-save": "content", "memory-review": "entity_name"}
 	if fmt.Sprint(gotPrompts) != fmt.Sprint(wantPrompts) {
 		t.Errorf("prompts = %v, want %v", gotPrompts, wantPrompts)
+	}
+}
+
+func TestNullToolArguments(t *testing.T) {
+	cs := connectInMemory(t, newMCPServer(newTestManager(t)))
+
+	// Optional parameters sent as null behave as if omitted.
+	mustCall(t, cs, "read_graph", map[string]any{"mode": nil, "limit": nil})
+	mustCall(t, cs, "detect_conflicts", map[string]any{"entityName": nil})
+
+	// Observations may be null or missing when creating an entity.
+	out := mustCall(t, cs, "create_entities", map[string]any{"entities": []map[string]any{
+		{"name": "NullObs", "entityType": "test", "observations": nil},
+		{"name": "NoObs", "entityType": "test"},
+	}})
+	if strings.Contains(out, `"observations":null`) || strings.Contains(out, `"observations": null`) {
+		t.Errorf("entity created with null observations: %s", out)
+	}
+	mustCall(t, cs, "add_observations", map[string]any{"observations": []map[string]any{
+		{"entityName": "NoObs", "contents": []string{"null is a fine word here"}},
+	}})
+	if out := mustCall(t, cs, "open_nodes", map[string]any{"names": []string{"NoObs"}}); !strings.Contains(out, "null is a fine word here") {
+		t.Errorf("observation text altered: %s", out)
+	}
+
+	// A required parameter sent as null is still missing.
+	if _, isErr := callTool(t, cs, "search_nodes", map[string]any{"query": nil}); !isErr {
+		t.Error("null query should be rejected")
+	}
+}
+
+func TestStripNullMembers(t *testing.T) {
+	tests := map[string]string{
+		`{"a":null,"b":1}`:                        `{"b":1}`,
+		`{"a":{"b":null,"c":[{"d":null,"e":2}]}}`: `{"a":{"c":[{"e":2}]}}`,
+		`{"a":["null",null]}`:                     `{"a":["null",null]}`,
+		`{"n":12345678901234567890,"x":null}`:     `{"n":12345678901234567890}`,
+		`not json null`:                           `not json null`,
+	}
+	for in, want := range tests {
+		if got := string(stripNullMembers(json.RawMessage(in))); got != want {
+			t.Errorf("stripNullMembers(%s) = %s, want %s", in, got, want)
+		}
 	}
 }
 
