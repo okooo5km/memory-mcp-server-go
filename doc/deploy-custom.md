@@ -61,7 +61,7 @@ Every deployment must satisfy these invariants, whatever the proxy or orchestrat
 
 Flags win over environment variables. Flags with one dash or two are equivalent (`-port` and `--port`). Secrets are marked **secret**: pass them through the environment or an env file with mode `0600`, never in argv (visible in `ps` and in container metadata) and never in a file that is committed to git.
 
-"Public-URL mode" is the column telling what changes when `MMS_PUBLIC_URL` (or `OAUTH_ISSUER`) is set and the option is not given explicitly.
+"Public-URL mode" is the column telling what changes when `MMS_PUBLIC_URL` is set and the option is not given explicitly.
 
 | Flag | Environment | Default | Public-URL mode | Notes |
 |------|-------------|---------|-----------------|-------|
@@ -70,7 +70,7 @@ Flags win over environment variables. Flags with one dash or two are equivalent 
 | `-p`, `--port` | `MMS_PORT` | `8080` | no change | 1 to 65535 |
 | `--host` | `MMS_HOST` | all interfaces | becomes `127.0.0.1` | Bind address for `http` and `sse` |
 | `--public-url` | `MMS_PUBLIC_URL` | empty | the switch itself | `scheme://host[:port]`, no path (C3, C4) |
-| `--oauth-issuer` | `OAUTH_ISSUER` | empty | acts as the public URL | Alias. If both are set they must be equal |
+| `--oauth-issuer` | `OAUTH_ISSUER` | empty | no change | Legacy: sets only the OAuth issuer, with no bind or `Host` changes. Do not use in new deployments. If both are set they must be equal |
 | `--oauth-user` | `OAUTH_USER` | empty | no change | Login name. Must be set together with the password |
 | `--oauth-pass` | `OAUTH_PASS` | empty | no change | **secret**. 12 or more characters (shorter triggers a warning) |
 | `--oauth-store` | `OAUTH_STORE_PATH` | none: tokens in memory | becomes `<dir of memory db>/oauth.db` when OAuth is enabled | Durable clients and tokens |

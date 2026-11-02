@@ -191,7 +191,7 @@ Tests are available in `storage/search_priority_test.go`, `auth/oauth_test.go` a
   --auth-bearer string     Require Bearer token for http/sse (env: MMS_AUTH_BEARER)
   --oauth-user string      OAuth login username (env: OAUTH_USER)
   --oauth-pass string      OAuth login password (env: OAUTH_PASS; prefer env)
-  --oauth-issuer string    Alias of --public-url (env: OAUTH_ISSUER)
+  --oauth-issuer string    Legacy: set only the OAuth issuer, with no other --public-url effects (env: OAUTH_ISSUER)
   --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
   --oauth-refresh-replay-grace string
                          Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)

@@ -28,7 +28,7 @@ export MEMORY_FILE_PATH=/var/lib/mms/memory.db
 | `--oauth-user` | `OAUTH_USER` | OAuth login username |
 | `--oauth-pass` | `OAUTH_PASS` | OAuth login password. Prefer the environment variable: command-line arguments are visible in the process list |
 | `--public-url` | `MMS_PUBLIC_URL` | Public base URL, e.g. `https://mcp.example.com`. Used as the OAuth issuer and resource |
-| `--oauth-issuer` | `OAUTH_ISSUER` | Alias of `--public-url` |
+| `--oauth-issuer` | `OAUTH_ISSUER` | Legacy: sets only the OAuth issuer. Prefer `--public-url` |
 | `--oauth-store` | `OAUTH_STORE_PATH` | SQLite store for durable OAuth clients, access tokens, and refresh tokens |
 | `--oauth-refresh-replay-grace` | `OAUTH_REFRESH_REPLAY_GRACE` | Duration to accept replay of a rotated refresh token (default `75m`) |
 | `--trusted-proxies` | `MMS_TRUSTED_PROXIES` | Comma-separated CIDRs or bare IPs of reverse proxies whose `X-Real-IP` header is trusted for rate limiting. Loopback is always trusted. An invalid value is a fatal startup error |
@@ -43,7 +43,7 @@ Both `--oauth-user` and `--oauth-pass` must be provided together to enable OAuth
 
 Set `--public-url` (or `MMS_PUBLIC_URL`) to the externally visible origin, `scheme://host[:port]` without a path. It is the OAuth issuer, the base of the protected resource identifier (`<public URL>/mcp`), and the only `Host` the server accepts besides loopback addresses: `/mcp` (or `/sse`) and the OAuth routes answer `403` to any other `Host` header. `/healthz` is exempt.
 
-`--oauth-issuer` / `OAUTH_ISSUER` is kept as an alias. If only the issuer is set it acts as the public URL; if both are set they must be equal, otherwise the server exits with an error.
+`--oauth-issuer` / `OAUTH_ISSUER` is kept for existing deployments. On its own it sets only the OAuth issuer and resource: transport, bind address and OAuth store keep their usual defaults, and the `Host` restriction does not apply, so upgrading does not change how such a server is reached. Switch to `--public-url` to get those protections. If both are set they must be equal, otherwise the server exits with an error.
 
 When a public URL is set and the matching option is not given explicitly, the server defaults to `--transport http`, `--host 127.0.0.1`, and (with OAuth enabled) `--oauth-store <memory directory>/oauth.db`.
 

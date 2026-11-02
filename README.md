@@ -139,7 +139,7 @@ mms [options]
   OAuth 2.1 (mutually exclusive with --auth-bearer):
   --oauth-user string      OAuth login username (env: OAUTH_USER)
   --oauth-pass string      OAuth login password (env: OAUTH_PASS; prefer the env var, argv is visible)
-  --oauth-issuer string    Alias of --public-url (env: OAUTH_ISSUER)
+  --oauth-issuer string    Legacy: set only the OAuth issuer, with no other --public-url effects (env: OAUTH_ISSUER)
   --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
   --oauth-refresh-replay-grace string
                            Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)

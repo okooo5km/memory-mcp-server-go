@@ -54,6 +54,7 @@ type appConfig struct {
 	OAuthUser          string
 	OAuthPass          string
 	PublicURL          string // normalized scheme://host[:port], or ""
+	Issuer             string // OAuth issuer: the public URL or the legacy --oauth-issuer, or ""
 	OAuthStore         string
 	OAuthStoreDefault  bool // OAuthStore must be derived from the memory path (see setDefaultOAuthStore)
 	RefreshReplayGrace time.Duration
@@ -99,7 +100,9 @@ func explicitFlags(fs *flag.FlagSet) map[string]bool {
 //
 // When a public URL is configured the following become defaults, used only
 // when not given explicitly (flag or env): transport=http, host=127.0.0.1 and
-// (when OAuth is enabled) the OAuth store next to the memory database.
+// (when OAuth is enabled) the OAuth store next to the memory database. The
+// legacy OAuth issuer sets only the issuer, so existing deployments keep their
+// bind address and accepted hosts when they upgrade.
 func resolveConfig(explicit map[string]bool, getenv func(string) string, f flagValues) (*appConfig, error) {
 	c := &appConfig{
 		Memory:       f.Memory,
@@ -125,7 +128,7 @@ func resolveConfig(explicit map[string]bool, getenv func(string) string, f flagV
 		return "", false
 	}
 
-	// Public URL (and its legacy alias, the OAuth issuer).
+	// Public URL and the legacy OAuth issuer.
 	publicURL := firstNonEmpty(f.PublicURL, "MMS_PUBLIC_URL")
 	issuer := firstNonEmpty(f.OAuthIssuer, "OAUTH_ISSUER")
 	if publicURL != "" {
@@ -142,13 +145,14 @@ func resolveConfig(explicit map[string]bool, getenv func(string) string, f flagV
 		}
 		issuer = v
 	}
-	switch {
-	case publicURL != "" && issuer != "" && publicURL != issuer:
+	if publicURL != "" && issuer != "" && publicURL != issuer {
 		return nil, fmt.Errorf("public URL %q and OAuth issuer %q differ; set only --public-url / MMS_PUBLIC_URL", publicURL, issuer)
-	case publicURL == "":
-		publicURL = issuer
 	}
 	c.PublicURL = publicURL
+	c.Issuer = issuer
+	if publicURL != "" {
+		c.Issuer = publicURL
+	}
 
 	// Transport.
 	if v, ok := explicitOrEnv("transport", f.Transport, "MMS_TRANSPORT"); ok {
@@ -266,7 +270,7 @@ func (c *appConfig) Warnings() []string {
 	}
 	var w []string
 	if c.OAuthEnabled() {
-		if c.PublicURL == "" && !isLoopbackListenHost(c.Host) {
+		if c.Issuer == "" && !isLoopbackListenHost(c.Host) {
 			w = append(w, "OAuth is enabled without a public URL and the server is not bound to loopback: the issuer is auto-detected from request headers. Set --public-url / MMS_PUBLIC_URL.")
 		}
 		if len(c.OAuthPass) < 12 {
@@ -279,8 +283,8 @@ func (c *appConfig) Warnings() []string {
 			w = append(w, "OAuth store is in memory: clients must log in again after every restart. Set --oauth-store / OAUTH_STORE_PATH.")
 		}
 	}
-	if c.PublicURL != "" {
-		if u, err := url.Parse(c.PublicURL); err == nil && u.Scheme == "http" && !isLoopbackListenHost(u.Hostname()) {
+	if c.Issuer != "" {
+		if u, err := url.Parse(c.Issuer); err == nil && u.Scheme == "http" && !isLoopbackListenHost(u.Hostname()) {
 			w = append(w, "Public URL uses plain http on a non-loopback host: tokens and passwords travel unencrypted. Use https.")
 		}
 	}

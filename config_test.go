@@ -113,15 +113,25 @@ func TestResolveConfig(t *testing.T) {
 		{name: "invalid env port", env: map[string]string{"MMS_PORT": "http"}, wantErr: "MMS_PORT"},
 		{name: "out of range env port", env: map[string]string{"MMS_PORT": "70000"}, wantErr: "port"},
 		{name: "out of range flag port", explicit: []string{"port"}, mutate: func(f *flagValues) { f.Port = 0 }, wantErr: "port"},
-		{name: "issuer alone acts as public url", mutate: func(f *flagValues) { f.OAuthIssuer = "https://mcp.example.com" },
+		{name: "issuer alone sets only the issuer", explicit: []string{"transport"}, mutate: func(f *flagValues) {
+			f.Transport = "http"
+			f.OAuthIssuer = "https://mcp.example.com"
+			f.OAuthUser, f.OAuthPass = "admin", "pw"
+		},
 			check: func(t *testing.T, c *appConfig) {
-				if c.PublicURL != "https://mcp.example.com" || c.Transport != "http" || c.Host != "127.0.0.1" {
+				if c.Issuer != "https://mcp.example.com" || c.PublicURL != "" || c.Host != "" || c.OAuthStoreDefault {
 					t.Errorf("%+v", c)
 				}
 			}},
-		{name: "issuer env alone", env: map[string]string{"OAUTH_ISSUER": "https://mcp.example.com"},
+		{name: "issuer env alone keeps the default transport", env: map[string]string{"OAUTH_ISSUER": "https://mcp.example.com"},
 			check: func(t *testing.T, c *appConfig) {
-				if c.PublicURL != "https://mcp.example.com" {
+				if c.Issuer != "https://mcp.example.com" || c.PublicURL != "" || c.Transport != "stdio" {
+					t.Errorf("%+v", c)
+				}
+			}},
+		{name: "public url is the issuer", mutate: func(f *flagValues) { f.PublicURL = "https://mcp.example.com" },
+			check: func(t *testing.T, c *appConfig) {
+				if c.Issuer != "https://mcp.example.com" {
 					t.Errorf("%+v", c)
 				}
 			}},
@@ -352,7 +362,7 @@ func TestWarnings(t *testing.T) {
 		return false
 	}
 	base := func() *appConfig {
-		return &appConfig{Transport: "http", Host: "127.0.0.1", OAuthUser: "admin", OAuthPass: "a-long-enough-pass", OAuthStore: "oauth.db", PublicURL: "https://x.example"}
+		return &appConfig{Transport: "http", Host: "127.0.0.1", OAuthUser: "admin", OAuthPass: "a-long-enough-pass", OAuthStore: "oauth.db", PublicURL: "https://x.example", Issuer: "https://x.example"}
 	}
 	if w := base().Warnings(); len(w) != 0 {
 		t.Errorf("clean config warned: %v", w)
@@ -361,7 +371,7 @@ func TestWarnings(t *testing.T) {
 		t.Errorf("stdio should not warn")
 	}
 	c := base()
-	c.PublicURL, c.Host = "", ""
+	c.PublicURL, c.Issuer, c.Host = "", "", ""
 	if !has(c, "auto-detected") {
 		t.Errorf("expected issuer auto-detect warning: %v", c.Warnings())
 	}
@@ -402,11 +412,11 @@ func TestWarnings(t *testing.T) {
 		t.Errorf("expected non-durable store warning")
 	}
 	c = base()
-	c.PublicURL = "http://mcp.example.com"
+	c.Issuer = "http://mcp.example.com"
 	if !has(c, "plain http") {
 		t.Errorf("expected plain http warning")
 	}
-	c.PublicURL = "http://localhost:8080"
+	c.Issuer = "http://localhost:8080"
 	if has(c, "plain http") {
 		t.Errorf("loopback http should not warn")
 	}

@@ -361,7 +361,7 @@ func main() {
 	flag.StringVar(&fv.PublicURL, "public-url", "", "Public base URL, e.g. https://mcp.example.com (env: MMS_PUBLIC_URL). Sets the OAuth issuer and resource, and defaults to http transport on 127.0.0.1 with the OAuth store next to the memory database")
 	flag.StringVar(&fv.OAuthUser, "oauth-user", "", "OAuth login username (env: OAUTH_USER)")
 	flag.StringVar(&fv.OAuthPass, "oauth-pass", "", "OAuth login password (env: OAUTH_PASS; prefer the environment, argv is visible in the process list)")
-	flag.StringVar(&fv.OAuthIssuer, "oauth-issuer", "", "Alias of --public-url (env: OAUTH_ISSUER)")
+	flag.StringVar(&fv.OAuthIssuer, "oauth-issuer", "", "Legacy: set only the OAuth issuer, with no other --public-url effects (env: OAUTH_ISSUER)")
 	flag.StringVar(&fv.OAuthStore, "oauth-store", "", "SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)")
 	flag.StringVar(&fv.OAuthRefreshReplayGrace, "oauth-refresh-replay-grace", "", "Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)")
 
@@ -456,7 +456,7 @@ func run(ctx context.Context, cfg *appConfig, manager *KnowledgeGraphManager) er
 		oauthSrv, err = auth.NewOAuthServerWithError(auth.Config{
 			Username:           cfg.OAuthUser,
 			Password:           cfg.OAuthPass,
-			Issuer:             cfg.PublicURL,
+			Issuer:             cfg.Issuer,
 			ResourcePath:       cfg.MCPPath(),
 			StorePath:          cfg.OAuthStore,
 			RefreshReplayGrace: cfg.RefreshReplayGrace,
