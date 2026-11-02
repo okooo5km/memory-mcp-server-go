@@ -194,7 +194,7 @@ func (s *OAuthServer) verifyToken(_ context.Context, token string, _ *http.Reque
 		return nil, fmt.Errorf("%w: unknown token", sdkauth.ErrInvalidToken)
 	}
 	if !entry.ExpiresAt.After(timeNow()) {
-		s.tokens.DeleteAccessToken(token)
+		_ = s.tokens.DeleteAccessToken(token)
 		return nil, fmt.Errorf("%w: token expired", sdkauth.ErrInvalidToken)
 	}
 	return &sdkauth.TokenInfo{

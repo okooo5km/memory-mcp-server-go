@@ -129,6 +129,8 @@ Without an OAuth store, clients and tokens are held in memory and are lost on re
 
 **Upgrading is automatic and one-way.** On first start the server converts a legacy plaintext store in a single transaction (all-or-nothing; a failure aborts startup and leaves the file untouched), then checkpoints the WAL and runs `VACUUM` so the old plaintext does not linger in the file. Logged-in clients keep working, including replay of just-rotated tokens. A store written by a newer schema version is refused with an error. An older binary cannot read the upgraded store: on downgrade, restore a pre-upgrade backup, or delete `oauth.db` (clients then have to log in again).
 
+**Failed revocations are reported.** A revocation is written in one transaction. If that write fails (disk full, read-only file system, lock timeout), `/revoke` answers `503` with `Retry-After`, and the client should retry. The server refuses the token immediately and retries the write on later `/revoke` requests and every 15 minutes. If the process restarts before a retry succeeds, the token becomes valid again, so watch for `failed to save a token revocation` in the log.
+
 The OAuth store file is forced to `0600` when opened. For systemd deployments, also set `UMask=0077` so SQLite sidecar files such as `oauth.db-wal` and `oauth.db-shm` are created with private permissions.
 
 ## Claude Desktop Integration

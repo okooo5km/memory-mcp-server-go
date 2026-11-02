@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -56,11 +58,9 @@ type persistentClientStore interface {
 type persistentTokenStore interface {
 	putAccessToken(*TokenEntry) error
 	getAccessToken(tokenHash string) (*TokenEntry, bool)
-	deleteAccessToken(tokenHash string) error
 	putRefreshToken(*RefreshTokenEntry) error
 	getRefreshToken(tokenHash string) (*RefreshTokenEntry, bool)
-	deleteRefreshToken(tokenHash string) error
-	deleteAccessTokensByRefresh(refreshHash string) error
+	revokeTokens(accessHashes, refreshHashes []string) error
 	findReplacedRefresh(replacementRefreshHash string) (string, bool)
 	rotateRefreshToken(oldRefreshHash string, access *TokenEntry, replacementRefresh *RefreshTokenEntry, oldRefresh *RefreshTokenEntry) error
 }
@@ -215,12 +215,20 @@ type TokenStore struct {
 	accessTokens  map[string]*TokenEntry        // keyed by access token hash
 	refreshTokens map[string]*RefreshTokenEntry // keyed by refresh token hash
 	persist       persistentTokenStore
+
+	// Revocations that could not be written to persist, keyed by token hash. The
+	// rows are still in the store, so lookups must refuse these tokens until a
+	// retry succeeds. This state does not survive a restart.
+	pendingAccess  map[string]struct{}
+	pendingRefresh map[string]struct{}
 }
 
 func newTokenStore() *TokenStore {
 	return &TokenStore{
-		accessTokens:  make(map[string]*TokenEntry),
-		refreshTokens: make(map[string]*RefreshTokenEntry),
+		accessTokens:   make(map[string]*TokenEntry),
+		refreshTokens:  make(map[string]*RefreshTokenEntry),
+		pendingAccess:  make(map[string]struct{}),
+		pendingRefresh: make(map[string]struct{}),
 	}
 }
 
@@ -264,20 +272,26 @@ func (s *TokenStore) GetAccessToken(token string) (*TokenEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok = s.persist.getAccessToken(h)
-	if ok {
-		s.accessTokens[h] = t
+	if !ok {
+		return nil, false
 	}
-	return t, ok
+	_, accessPending := s.pendingAccess[h]
+	_, refreshPending := s.pendingRefresh[t.RefreshHash]
+	if accessPending || refreshPending {
+		return nil, false
+	}
+	s.accessTokens[h] = t
+	return t, true
 }
 
-func (s *TokenStore) DeleteAccessToken(token string) {
+// DeleteAccessToken revokes an access token. On error the token is refused from
+// now on, but the revocation is not durable yet (see persistRevocationLocked).
+func (s *TokenStore) DeleteAccessToken(token string) error {
 	h := hashToken(token)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.accessTokens, h)
-	if s.persist != nil {
-		logStoreDelete(s.persist.deleteAccessToken(h))
-	}
+	return s.persistRevocationLocked([]string{h}, nil)
 }
 
 // PutRefreshToken stores a refresh token. Like PutAccessToken, it fails if the
@@ -317,28 +331,67 @@ func (s *TokenStore) GetRefreshToken(token string) (*RefreshTokenEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok = s.persist.getRefreshToken(h)
-	if ok {
-		s.refreshTokens[h] = t
+	if !ok {
+		return nil, false
 	}
-	return t, ok
+	if _, pending := s.pendingRefresh[h]; pending {
+		return nil, false
+	}
+	s.refreshTokens[h] = t
+	return t, true
 }
 
-func (s *TokenStore) DeleteRefreshToken(token string) {
+// DeleteRefreshToken revokes one refresh token without following its rotation
+// chain. Errors mean the same as for DeleteAccessToken.
+func (s *TokenStore) DeleteRefreshToken(token string) error {
 	h := hashToken(token)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.refreshTokens, h)
-	if s.persist != nil {
-		logStoreDelete(s.persist.deleteRefreshToken(h))
-	}
+	return s.persistRevocationLocked(nil, []string{h})
 }
 
-// logStoreDelete reports a failed delete. A revoked token gone from memory but
-// not from the store comes back on restart, so the operator has to know.
-func logStoreDelete(err error) {
-	if err != nil {
-		log.Printf("OAuth store: failed to delete a revoked token, it stays valid after a restart: %v", err)
+// persistRevocationLocked writes a revocation to the store in one transaction.
+// On failure the tokens are recorded as pending, so that this process refuses
+// them even though their rows remain. They are retried by
+// RetryPendingRevocations and cleanup, but come back if the process restarts
+// before a retry succeeds.
+func (s *TokenStore) persistRevocationLocked(accessHashes, refreshHashes []string) error {
+	if s.persist == nil {
+		return nil
 	}
+	err := s.persist.revokeTokens(accessHashes, refreshHashes)
+	if err == nil {
+		return nil
+	}
+	for _, h := range accessHashes {
+		s.pendingAccess[h] = struct{}{}
+	}
+	for _, h := range refreshHashes {
+		s.pendingRefresh[h] = struct{}{}
+	}
+	log.Printf("OAuth store: failed to save a token revocation: %v. The token is refused for now, but it becomes valid again if the server restarts before a retry succeeds.", err)
+	return err
+}
+
+// RetryPendingRevocations writes revocations that failed earlier to the store.
+func (s *TokenStore) RetryPendingRevocations() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.retryPendingLocked()
+}
+
+func (s *TokenStore) retryPendingLocked() error {
+	if s.persist == nil || (len(s.pendingAccess) == 0 && len(s.pendingRefresh) == 0) {
+		return nil
+	}
+	if err := s.persist.revokeTokens(slices.Collect(maps.Keys(s.pendingAccess)), slices.Collect(maps.Keys(s.pendingRefresh))); err != nil {
+		return err
+	}
+	clear(s.pendingAccess)
+	clear(s.pendingRefresh)
+	log.Printf("OAuth store: saved the pending token revocations")
+	return nil
 }
 
 // lookupRefreshLocked finds a refresh token by hash in memory or the persistent store.
@@ -371,8 +424,9 @@ func (s *TokenStore) predecessorLocked(hash string) string {
 // RevokeRefreshToken revokes a refresh token together with every access token
 // linked to it (RFC 7009 section 2.1). Because rotation chains refresh tokens,
 // the whole chain (earlier and later members) is revoked, so a replay inside
-// the grace window cannot resurrect the session.
-func (s *TokenStore) RevokeRefreshToken(token string) {
+// the grace window cannot resurrect the session. Errors mean the same as for
+// DeleteAccessToken.
+func (s *TokenStore) RevokeRefreshToken(token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -401,11 +455,8 @@ func (s *TokenStore) RevokeRefreshToken(token string) {
 			}
 		}
 		delete(s.refreshTokens, rth)
-		if s.persist != nil {
-			logStoreDelete(s.persist.deleteAccessTokensByRefresh(rth))
-			logStoreDelete(s.persist.deleteRefreshToken(rth))
-		}
 	}
+	return s.persistRevocationLocked(nil, slices.Collect(maps.Keys(chain)))
 }
 
 // RotateRefreshToken atomically rotates a refresh token. The replay grace window
@@ -417,6 +468,9 @@ func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, pending := s.pendingRefresh[h]; pending {
+		return nil, errInvalidRefreshToken
+	}
 	rt, ok := s.refreshTokens[h]
 	if !ok && s.persist != nil {
 		rt, ok = s.persist.getRefreshToken(h)
@@ -493,6 +547,7 @@ func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.
 func (s *TokenStore) cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_ = s.retryPendingLocked() // already logged when the revocation failed
 	now := time.Now()
 	for k, t := range s.accessTokens {
 		if now.After(t.ExpiresAt) {

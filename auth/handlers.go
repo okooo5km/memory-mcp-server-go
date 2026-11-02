@@ -526,7 +526,7 @@ func (s *OAuthServer) issueTokenPair(w http.ResponseWriter, clientID string) {
 	}
 	if err := s.tokens.PutRefreshToken(pair.RefreshToken, clientID, pair.RefreshExpiresAt); err != nil {
 		log.Printf("OAuth token issue failed: client_id=%s error=%v", shortOAuthID(clientID), err)
-		s.tokens.DeleteAccessToken(pair.AccessToken)
+		_ = s.tokens.DeleteAccessToken(pair.AccessToken)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to store token")
 		return
 	}
@@ -588,13 +588,14 @@ func (s *OAuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PostForm.Get("client_id")
 	owned := func(owner string) bool { return clientID == "" || clientID == owner }
 
+	var revokeErr error
 	revokeRefresh := func() bool {
 		rt, ok := s.tokens.GetRefreshToken(token)
 		if !ok {
 			return false
 		}
 		if owned(rt.ClientID) {
-			s.tokens.RevokeRefreshToken(token)
+			revokeErr = s.tokens.RevokeRefreshToken(token)
 		}
 		return true
 	}
@@ -604,7 +605,7 @@ func (s *OAuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		if owned(at.ClientID) {
-			s.tokens.DeleteAccessToken(token)
+			revokeErr = s.tokens.DeleteAccessToken(token)
 		}
 		return true
 	}
@@ -613,6 +614,16 @@ func (s *OAuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		_ = revokeAccess() || revokeRefresh()
 	} else {
 		_ = revokeRefresh() || revokeAccess()
+	}
+	// A retry after a 503 no longer finds the token, so it also has to flush the
+	// revocation that failed before answering success.
+	if revokeErr == nil {
+		revokeErr = s.tokens.RetryPendingRevocations()
+	}
+	if revokeErr != nil {
+		w.Header().Set("Retry-After", "30")
+		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "the revocation could not be saved; retry later")
+		return
 	}
 	w.WriteHeader(http.StatusOK)
 }

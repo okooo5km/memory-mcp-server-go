@@ -358,11 +358,6 @@ func (s *persistentStore) getAccessToken(tokenHash string) (*TokenEntry, bool) {
 	return &t, true
 }
 
-func (s *persistentStore) deleteAccessToken(tokenHash string) error {
-	_, err := s.db.Exec("DELETE FROM oauth_access_tokens WHERE token_hash = ?", tokenHash)
-	return err
-}
-
 func (s *persistentStore) putRefreshToken(t *RefreshTokenEntry) error {
 	_, err := s.db.Exec(`
 		INSERT INTO oauth_refresh_tokens (
@@ -401,14 +396,28 @@ func (s *persistentStore) getRefreshToken(tokenHash string) (*RefreshTokenEntry,
 	return &t, true
 }
 
-func (s *persistentStore) deleteRefreshToken(tokenHash string) error {
-	_, err := s.db.Exec("DELETE FROM oauth_refresh_tokens WHERE token_hash = ?", tokenHash)
-	return err
-}
-
-func (s *persistentStore) deleteAccessTokensByRefresh(refreshHash string) error {
-	_, err := s.db.Exec("DELETE FROM oauth_access_tokens WHERE refresh_hash = ?", refreshHash)
-	return err
+// revokeTokens deletes the given access tokens and refresh tokens, along with
+// the access tokens linked to those refresh tokens, in one transaction.
+func (s *persistentStore) revokeTokens(accessHashes, refreshHashes []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, h := range accessHashes {
+		if _, err := tx.Exec("DELETE FROM oauth_access_tokens WHERE token_hash = ?", h); err != nil {
+			return err
+		}
+	}
+	for _, h := range refreshHashes {
+		if _, err := tx.Exec("DELETE FROM oauth_access_tokens WHERE refresh_hash = ?", h); err != nil {
+			return err
+		}
+		if _, err := tx.Exec("DELETE FROM oauth_refresh_tokens WHERE token_hash = ?", h); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *persistentStore) findReplacedRefresh(replacementRefreshHash string) (string, bool) {

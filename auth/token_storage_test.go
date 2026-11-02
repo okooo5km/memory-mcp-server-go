@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -611,4 +612,209 @@ func TestRevocationDuringCacheFillSticks(t *testing.T) {
 			t.Error("revoked token came back from the cache")
 		}
 	})
+}
+
+// flakyRevokeStore fails revocation writes on demand while reads keep working,
+// as happens with a full disk or a held write lock.
+type flakyRevokeStore struct {
+	persistentTokenStore
+	fail atomic.Bool
+}
+
+func (f *flakyRevokeStore) revokeTokens(accessHashes, refreshHashes []string) error {
+	if f.fail.Load() {
+		return errors.New("disk full")
+	}
+	return f.persistentTokenStore.revokeTokens(accessHashes, refreshHashes)
+}
+
+func setupFlakyRevoke(t *testing.T) (*OAuthServer, *http.ServeMux, *flakyRevokeStore) {
+	t.Helper()
+	srv, err := NewOAuthServerWithError(Config{Username: "a", Password: "b", StorePath: filepath.Join(t.TempDir(), "oauth.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Close)
+	flaky := &flakyRevokeStore{persistentTokenStore: srv.store}
+	srv.tokens.persist = flaky
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux, func(next http.Handler) http.Handler { return next })
+	return srv, mux, flaky
+}
+
+func postRevoke(mux *http.ServeMux, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(url.Values{"token": {token}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	return w
+}
+
+func TestRevokeRefreshReportsStoreFailure(t *testing.T) {
+	srv, mux, flaky := setupFlakyRevoke(t)
+	access, refresh := issueTestTokenPair(t, srv, "c")
+	flaky.fail.Store(true)
+
+	w := postRevoke(mux, refresh)
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("got %d %q, want 503 with Retry-After", w.Code, w.Body.String())
+	}
+
+	// The rows are still there, yet nothing may bring the tokens back.
+	if _, ok := srv.store.getRefreshToken(hashToken(refresh)); !ok {
+		t.Fatal("test needs the refresh row to remain in the store")
+	}
+	if _, ok := srv.store.getAccessToken(hashToken(access)); !ok {
+		t.Fatal("test needs the access row to remain in the store")
+	}
+	if _, ok := srv.tokens.GetAccessToken(access); ok {
+		t.Error("access token came back from the store")
+	}
+	if _, ok := srv.tokens.GetRefreshToken(refresh); ok {
+		t.Error("refresh token came back from the store")
+	}
+	if _, err := srv.verifyToken(t.Context(), access, nil); err == nil {
+		t.Error("revoked access token still authenticates")
+	}
+	if _, err := srv.tokens.RotateRefreshToken(refresh, "c", time.Now(), time.Hour, newTokenPair); !errors.Is(err, errInvalidRefreshToken) {
+		t.Errorf("rotating a revoked token: err = %v", err)
+	}
+
+	// A retry must not report success while the store still fails.
+	if w := postRevoke(mux, refresh); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("retry during the outage: got %d", w.Code)
+	}
+
+	flaky.fail.Store(false)
+	if w := postRevoke(mux, refresh); w.Code != http.StatusOK {
+		t.Fatalf("retry after the outage: got %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := srv.store.getRefreshToken(hashToken(refresh)); ok {
+		t.Error("refresh row left behind")
+	}
+	if _, ok := srv.store.getAccessToken(hashToken(access)); ok {
+		t.Error("access row left behind")
+	}
+	if len(srv.tokens.pendingAccess)+len(srv.tokens.pendingRefresh) != 0 {
+		t.Error("pending revocations not cleared")
+	}
+}
+
+func TestRevokeAccessReportsStoreFailure(t *testing.T) {
+	srv, mux, flaky := setupFlakyRevoke(t)
+	access, refresh := issueTestTokenPair(t, srv, "c")
+	flaky.fail.Store(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(url.Values{"token": {access}, "token_type_hint": {"access_token"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d", w.Code)
+	}
+	if _, ok := srv.tokens.GetAccessToken(access); ok {
+		t.Error("access token came back from the store")
+	}
+	if _, ok := srv.tokens.GetRefreshToken(refresh); !ok {
+		t.Error("revoking an access token must leave its refresh token alone")
+	}
+}
+
+func TestRevokeOfOtherTokenWithoutPendingSucceeds(t *testing.T) {
+	_, mux, flaky := setupFlakyRevoke(t)
+	flaky.fail.Store(true)
+	if w := postRevoke(mux, "unknown"); w.Code != http.StatusOK {
+		t.Errorf("unknown token with nothing pending: got %d, want 200 (RFC 7009)", w.Code)
+	}
+}
+
+func TestCleanupRetriesPendingRevocations(t *testing.T) {
+	srv, mux, flaky := setupFlakyRevoke(t)
+	access, refresh := issueTestTokenPair(t, srv, "c")
+	flaky.fail.Store(true)
+	postRevoke(mux, refresh)
+
+	srv.tokens.cleanup()
+	if len(srv.tokens.pendingRefresh) == 0 {
+		t.Fatal("pending revocation dropped while the store still fails")
+	}
+	if _, ok := srv.tokens.GetAccessToken(access); ok {
+		t.Error("access token came back after a failed retry")
+	}
+
+	flaky.fail.Store(false)
+	srv.tokens.cleanup()
+	if len(srv.tokens.pendingRefresh) != 0 {
+		t.Error("pending revocation not cleared")
+	}
+	if _, ok := srv.store.getRefreshToken(hashToken(refresh)); ok {
+		t.Error("refresh row left behind")
+	}
+}
+
+func TestRevokeChainIsAllOrNothing(t *testing.T) {
+	store, err := openPersistentStore(filepath.Join(t.TempDir(), "oauth.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.close() })
+	tokens := newTokenStore()
+	tokens.persist = store
+
+	exp := time.Now().Add(time.Hour)
+	if err := tokens.PutRefreshToken("r0", "c", exp); err != nil {
+		t.Fatal(err)
+	}
+	var pairs []*TokenPair
+	cur := "r0"
+	for range 3 {
+		pair, err := tokens.RotateRefreshToken(cur, "c", time.Now(), time.Hour, newTokenPair)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pairs = append(pairs, pair)
+		cur = pair.RefreshToken
+	}
+
+	// Refuse to delete the last member. Whatever order the chain is written in,
+	// the rows deleted before that point must be rolled back.
+	last := hashToken(cur)
+	if _, err := store.db.Exec(`CREATE TRIGGER block_delete BEFORE DELETE ON oauth_refresh_tokens
+		WHEN old.token_hash = '` + last + `' BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokens.RevokeRefreshToken("r0"); err == nil {
+		t.Fatal("revocation should fail")
+	}
+	for _, h := range []string{hashToken("r0"), hashToken(pairs[0].RefreshToken), hashToken(pairs[1].RefreshToken), last} {
+		if _, ok := store.getRefreshToken(h); !ok {
+			t.Errorf("refresh row %s deleted by a failed revocation", h[:8])
+		}
+	}
+	for _, p := range pairs {
+		if _, ok := store.getAccessToken(hashToken(p.AccessToken)); !ok {
+			t.Errorf("access row deleted by a failed revocation")
+		}
+		if _, ok := tokens.GetAccessToken(p.AccessToken); ok {
+			t.Errorf("access token usable after a failed revocation")
+		}
+		if _, ok := tokens.GetRefreshToken(p.RefreshToken); ok {
+			t.Errorf("refresh token usable after a failed revocation")
+		}
+	}
+
+	if _, err := store.db.Exec(`DROP TRIGGER block_delete`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokens.RetryPendingRevocations(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pairs {
+		if _, ok := store.getAccessToken(hashToken(p.AccessToken)); ok {
+			t.Errorf("access row left behind after retry")
+		}
+		if _, ok := store.getRefreshToken(hashToken(p.RefreshToken)); ok {
+			t.Errorf("refresh row left behind after retry")
+		}
+	}
 }
