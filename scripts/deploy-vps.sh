@@ -19,6 +19,9 @@ ENV_FILE="${CONF_DIR}/mms.env"
 UNIT_FILE="/etc/systemd/system/mms.service"
 ACME_ROOT="/var/www/mms-acme"
 DEPLOY_HOOK="/etc/letsencrypt/renewal-hooks/deploy/mms-nginx.sh"
+CATCHALL_CONF="/etc/nginx/conf.d/00-mms-catchall.conf"
+DEFAULT_SITE_LINK="/etc/nginx/sites-enabled/default"
+DEFAULT_SITE_WWW="/var/www/html"
 
 # Options (set by parse_args)
 DOMAIN=""
@@ -42,6 +45,7 @@ OAUTH_USER_VAL="admin"
 PASS_GENERATED=false
 WARNINGS=0
 WORKDIR=""
+DEFAULT_SITE_RESTORE=""   # link target of the stock default site if we disabled it
 
 usage() {
   cat <<USAGE
@@ -700,6 +704,141 @@ ensure_hash_bucket() {
   printf 'server_names_hash_bucket_size 128;\n' > /etc/nginx/conf.d/00-mms-hash.conf
 }
 
+# nginx_version -> "X.Y.Z" of the installed nginx (empty if unknown)
+nginx_version() {
+  nginx -v 2>&1 | sed -nE 's#.*nginx/([0-9]+\.[0-9]+\.[0-9]+).*#\1#p'
+}
+
+# version_ge A B -> success if version A >= version B
+version_ge() {
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
+}
+
+# Disable the stock Debian/Ubuntu default site, but only if it is untouched:
+# the enabled entry is the standard symlink and /var/www/html holds nothing
+# except the stock index page. Only the symlink is ever removed.
+remove_stock_default_site() {
+  local target extra
+  [ -L "${DEFAULT_SITE_LINK}" ] || return 0
+  target=$(readlink "${DEFAULT_SITE_LINK}")
+  case "${target}" in
+    ../sites-available/default|/etc/nginx/sites-available/default) ;;
+    *)
+      log "Leaving ${DEFAULT_SITE_LINK} enabled: it does not link to the stock sites-available/default"
+      return 0
+      ;;
+  esac
+  if [ -d "${DEFAULT_SITE_WWW}" ]; then
+    extra=$(find "${DEFAULT_SITE_WWW}" -mindepth 1 -maxdepth 1 ! -name index.nginx-debian.html -print -quit 2>/dev/null || true)
+    if [ -n "${extra}" ]; then
+      log "Leaving ${DEFAULT_SITE_LINK} enabled: ${DEFAULT_SITE_WWW} has custom content (${extra})"
+      return 0
+    fi
+  fi
+  rm -f "${DEFAULT_SITE_LINK}"
+  DEFAULT_SITE_RESTORE="${target}"
+  log "Disabled the stock nginx default site (removed the ${DEFAULT_SITE_LINK} symlink; sites-available/default is untouched)"
+}
+
+restore_stock_default_site() {
+  [ -n "${DEFAULT_SITE_RESTORE}" ] || return 0
+  ln -s "${DEFAULT_SITE_RESTORE}" "${DEFAULT_SITE_LINK}"
+  DEFAULT_SITE_RESTORE=""
+}
+
+# default_server_taken PORT DUMP -> success if some server in the nginx config
+# dump (nginx -T output) already declares default_server on PORT.
+default_server_taken() {
+  printf '%s\n' "$2" | awk -v port="$1" '
+    { sub(/#.*/, ""); gsub(/[;{}]/, " & ") }
+    {
+      for (k = 1; k <= NF; k++) {
+        if ($k == "listen" && !inlisten) {
+          inlisten = 1
+          addr = $(++k)
+          skip = (addr ~ /^unix:/)
+          n = split(addr, a, ":")
+          p = (a[n] ~ /^[0-9]+$/) ? a[n] : "80"
+          if (p != port) skip = 1
+        } else if (inlisten) {
+          if ($k == ";") inlisten = 0
+          else if (!skip && ($k == "default_server" || $k == "default")) found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
+# render_nginx_catchall WANT80 WANT443
+render_nginx_catchall() {
+  echo "# Managed by deploy-vps.sh - regenerated on every run."
+  echo "# Catch-all for requests that match no configured server_name."
+  if [ "$2" -eq 1 ]; then
+    echo "server {"
+    echo "    listen 443 ssl default_server;"
+    [ "${HAS_IPV6}" -eq 1 ] && echo "    listen [::]:443 ssl default_server;"
+    echo "    ssl_reject_handshake on;"
+    echo "}"
+  fi
+  if [ "$1" -eq 1 ]; then
+    echo "server {"
+    echo "    listen 80 default_server;"
+    [ "${HAS_IPV6}" -eq 1 ] && echo "    listen [::]:80 default_server;"
+    echo "    server_name _;"
+    echo "    return 444;"
+    echo "}"
+  fi
+  return 0
+}
+
+# Catch-all servers so that unknown Host / SNI values neither see the real
+# certificate nor reach the app. Any default_server that already exists
+# (e.g. on a shared VPS) wins and is left untouched.
+setup_catchall() {
+  local dump want80=0 want443=0 ver
+
+  # Detect against the effective config without our own file.
+  rm -f "${CATCHALL_CONF}" "${CATCHALL_CONF}.bak"
+  remove_stock_default_site
+
+  if ! dump=$(nginx -T 2>/dev/null); then
+    warn "The existing nginx configuration does not validate; skipping the catch-all server"
+    restore_stock_default_site
+    return 0
+  fi
+
+  if default_server_taken 80 "${dump}"; then
+    log "Note: another server already has a port 80 default_server; leaving it as the catch-all (unknown Hosts on HTTP are served by it)"
+  else
+    want80=1
+  fi
+
+  ver=$(nginx_version)
+  if [ -z "${ver}" ] || ! version_ge "${ver}" 1.19.4; then
+    log "Note: nginx ${ver:-(unknown version)} lacks ssl_reject_handshake (needs 1.19.4+); unknown SNI on 443 will still get the first server's certificate"
+  elif default_server_taken 443 "${dump}"; then
+    log "Note: another server already has a port 443 default_server; leaving it in place"
+  else
+    want443=1
+  fi
+
+  if [ "${want80}" -eq 0 ] && [ "${want443}" -eq 0 ]; then
+    return 0
+  fi
+
+  log "Writing ${CATCHALL_CONF} (HTTP catch-all: $([ "${want80}" -eq 1 ] && echo yes || echo no), TLS reject: $([ "${want443}" -eq 1 ] && echo yes || echo no))"
+  render_nginx_catchall "${want80}" "${want443}" > "${CATCHALL_CONF}"
+  chmod 0644 "${CATCHALL_CONF}"
+  if ! nginx -t >/dev/null 2>&1; then
+    warn "nginx rejected the catch-all configuration; removing it and continuing without it"
+    nginx -t >&2 || true
+    rm -f "${CATCHALL_CONF}"
+    restore_stock_default_site
+  fi
+  return 0
+}
+
 setup_nginx() {
   local conf
   conf=$(nginx_conf_path)
@@ -707,6 +846,7 @@ setup_nginx() {
   install -d -m 0755 -o root -g root "${ACME_ROOT}"
   install -d -m 0755 /etc/nginx/conf.d
   ensure_hash_bucket
+  setup_catchall
 
   if [ -z "${CERT_PATH}" ]; then
     if [ -s "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
@@ -826,8 +966,13 @@ verify_public() {
   if [ "${trusted}" = false ]; then
     k=(-k)
   fi
-  code=$(curl -sS "${k[@]}" --max-time 10 --resolve "${resolve}" -o /dev/null -w '%{http_code}' \
-    -X POST -H 'Content-Type: application/json' -d '{}' "https://${DOMAIN}/mcp" 2>/dev/null || true)
+  # nginx reloads asynchronously, so old workers may still answer for a moment.
+  for _ in 1 2 3 4 5; do
+    code=$(curl -sS "${k[@]}" --max-time 10 --resolve "${resolve}" -o /dev/null -w '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' -d '{}' "https://${DOMAIN}/mcp" 2>/dev/null || true)
+    [ "${code}" = "401" ] && break
+    sleep 1
+  done
   if [ "${code}" = "401" ]; then
     log "Unauthenticated POST /mcp -> 401 (OAuth enforced)"
   else

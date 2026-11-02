@@ -38,10 +38,11 @@ The script checks DNS and ports first. A DNS mismatch only produces a warning (i
 3. Downloads `mms_<version>_linux_<arch>.tar.gz` from GitHub Releases, verifies it against the release's `checksums.txt` (SHA-256), and installs `/usr/local/bin/mms` atomically. With `--binary` it installs your local file instead.
 4. Creates the `mms` system user (no login shell), `/var/lib/mms` (0700) and `/etc/mms/mms.env` (0600, root).
 5. Installs and starts `mms.service` (hardened: `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `UMask=0077` and more) and waits for `http://127.0.0.1:PORT/healthz`.
-6. Configures nginx in two phases: a port-80-only config that answers the ACME challenge, then `certbot certonly --webroot`, then the final config. certbot never edits the nginx config.
-7. Installs a certbot deploy hook that reloads nginx and enables the certbot renewal timer.
-8. Opens ports 80/443 if ufw or firewalld is active. On SELinux-enforcing systems it enables `httpd_can_network_connect` so nginx can reach the backend.
-9. Verifies `https://DOMAIN/.well-known/oauth-protected-resource/mcp` and that an unauthenticated `POST /mcp` returns `401`.
+6. Installs a catch-all server (see [Catch-all server](#catch-all-server)) so unknown hostnames never see your certificate or reach the app, and on a stock Debian/Ubuntu box disables the untouched nginx default site.
+7. Configures nginx in two phases: a port-80-only config that answers the ACME challenge, then `certbot certonly --webroot`, then the final config. certbot never edits the nginx config.
+8. Installs a certbot deploy hook that reloads nginx and enables the certbot renewal timer.
+9. Opens ports 80/443 if ufw or firewalld is active. On SELinux-enforcing systems it enables `httpd_can_network_connect` so nginx can reach the backend.
+10. Verifies `https://DOMAIN/.well-known/oauth-protected-resource/mcp` and that an unauthenticated `POST /mcp` returns `401`.
 
 Exposed through nginx: `/mcp` and the OAuth paths (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/authorize`, `/token`, `/register`, `/revoke`). Everything else, including `/healthz`, returns 404. `/authorize` and `/register` are limited to about 10 requests/minute per IP, `/token` and `/revoke` to 30 requests/minute (with a burst allowance, then `429`).
 
@@ -54,8 +55,29 @@ Files written:
 | `/var/lib/mms/` | Data: `memory.db`, `oauth.db` |
 | `/etc/systemd/system/mms.service` | systemd unit |
 | `/etc/nginx/conf.d/mms-<domain>.conf` | nginx site and rate-limit zones |
+| `/etc/nginx/conf.d/00-mms-catchall.conf` | Catch-all servers for unknown Host / SNI (regenerated every run; may be absent) |
 | `/var/www/mms-acme/` | ACME webroot |
 | `/etc/letsencrypt/renewal-hooks/deploy/mms-nginx.sh` | Reloads nginx after renewal |
+
+## Catch-all server
+
+Without a catch-all, nginx hands any request that matches no `server_name` to the first server on that port. For a fresh install that means any TLS handshake, whatever SNI it carries (`openssl s_client -servername anything`), is answered with your real certificate, which discloses the domain, and the request reaches the app (which replies `403`). On Debian/Ubuntu the distro's default site would also still answer plain HTTP for unknown hosts with "Welcome to nginx".
+
+The script writes `/etc/nginx/conf.d/00-mms-catchall.conf`, regenerated on every run, with whichever of these is safe:
+
+- Port 443: `listen 443 ssl default_server;` (plus `[::]:443` when the host has IPv6) with `ssl_reject_handshake on;`. Unknown SNI, and clients connecting by bare IP without SNI, get a TLS alert and no certificate. Only added when nginx is 1.19.4 or newer; on older versions (for example Debian 11, Ubuntu 20.04/22.04 ship 1.18) the script logs a note and skips it, and unknown SNI still receives the first 443 server's certificate.
+- Port 80: `listen 80 default_server;` (plus `[::]:80`) with `server_name _; return 444;`, which closes the connection without a response. Requests for your domain still match their own server block, so the ACME challenge and the `301` to HTTPS are unaffected.
+
+Both pieces leave your domain alone: `curl --resolve mcp.example.com:443:127.0.0.1 https://mcp.example.com/` works as before. Clients that reach the server only by IP address will now be rejected; use the hostname.
+
+**Shared VPS.** Before deciding, the script looks at the effective nginx configuration (`nginx -T`) with its own catch-all file set aside. If another server already declares `default_server` on port 80 or 443, that one wins and stays untouched; the script logs a note and omits the corresponding catch-all from its file (or writes no file at all). The same happens when RHEL-family builds ship a `default_server` in `nginx.conf`. A stock RHEL `nginx.conf` server that has `listen 80;` without `default_server` is simply overridden by the explicit default. Re-running never produces a "duplicate default server" error, and if `nginx -t` rejects the catch-all anyway the script removes it, restores what it changed, prints a warning and carries on.
+
+**Debian/Ubuntu default site.** The script removes the `/etc/nginx/sites-enabled/default` symlink, and only that, when all of these hold:
+
+- it is a symlink to `../sites-available/default` or `/etc/nginx/sites-available/default`;
+- `/var/www/html` contains nothing other than the stock `index.nginx-debian.html`.
+
+`/etc/nginx/sites-available/default` is never touched, so `ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default` brings it back. If either condition fails (a customised site, extra files in `/var/www/html`), the symlink stays and the script logs why. Since that default site declares `listen 80 default_server`, the port 80 catch-all is then skipped and unknown Hosts on HTTP keep being served by your default site; the port 443 catch-all is still installed.
 
 ## Runtime Configuration
 
@@ -266,6 +288,26 @@ server {
 }
 ```
 
+Optionally add the catch-all so unknown hostnames do not see this certificate or reach mms. Skip any part for which another server on the machine already has `default_server` on that port (nginx refuses duplicates). `ssl_reject_handshake` needs nginx 1.19.4 or newer.
+
+```nginx
+# /etc/nginx/conf.d/00-mms-catchall.conf
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    ssl_reject_handshake on;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
+```
+
+On Debian/Ubuntu also remove `/etc/nginx/sites-enabled/default` if you do not use it, otherwise it holds the port 80 `default_server`.
+
 The server must run with `MMS_PUBLIC_URL=https://mcp.example.com` (matching the public URL exactly) and `MMS_PORT` equal to the proxy port.
 
 ## Docker
@@ -284,6 +326,7 @@ The script installs a native binary and does not use Docker. It must run as root
 | `502 Bad Gateway` | mms is not running or listens on a different port. `systemctl status mms`, `journalctl -u mms -n 50`, `curl http://127.0.0.1:8080/healthz`. On SELinux systems check `getsebool httpd_can_network_connect`. |
 | `429 Too Many Requests` | Rate limit on the OAuth endpoints; wait a minute. |
 | Service fails to start | `journalctl -u mms -n 50`. Confirm `/var/lib/mms` is owned by `mms` and `/etc/mms/mms.env` is well-formed. |
+| Unknown hostnames get "Welcome to nginx" over HTTP | The Debian/Ubuntu default site is still enabled (customised, or another `default_server` exists); see [Catch-all server](#catch-all-server). |
 | `nginx -t` fails | Read its message. Very long domain names may need `server_names_hash_bucket_size`; the script sets it for names over 40 characters. |
 
 Useful commands:
