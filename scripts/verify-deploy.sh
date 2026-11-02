@@ -253,7 +253,7 @@ if grep -q 'redirect_uri does not match' "$BODY"; then ok "error says redirect_u
 
 req GET "$BASE/authorize?$(authz_query 'http%3A%2F%2Flocalhost%3A8765%2Fcb')"
 expect_status "GET /authorize login page" 200
-for pair in "X-Frame-Options:DENY" "X-Content-Type-Options:nosniff" "Cache-Control:no-store" "Referrer-Policy:no-referrer"; do
+for pair in "X-Frame-Options:DENY" "X-Content-Type-Options:nosniff" "Cache-Control:no-store" "Referrer-Policy:same-origin"; do
   name="${pair%%:*}"; want="${pair#*:}"
   got="$(hdr "$name")"
   case "$got" in

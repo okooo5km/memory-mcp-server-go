@@ -605,7 +605,7 @@ $C -D - -o /dev/null "$BASE/authorize?$Q&redirect_uri=http%3A%2F%2Flocalhost%3A8
   | grep -i -E '^(HTTP|x-frame-options|x-content-type-options|cache-control|referrer-policy|content-security-policy)'
 ```
 
-Expected: status `200`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, and a `Content-Security-Policy` starting with `default-src 'none'`. A missing header means the proxy strips or overrides response headers.
+Expected: status `200`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: same-origin`, and a `Content-Security-Policy` starting with `default-src 'none'`. A missing header means the proxy strips or overrides response headers.
 
 **Check 8 -- the login page renders for a registered client.**
 

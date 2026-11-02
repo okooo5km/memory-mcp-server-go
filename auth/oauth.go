@@ -272,7 +272,9 @@ func renderHTML(w http.ResponseWriter, status int, tmpl *template.Template, data
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Referrer-Policy", "no-referrer")
+	// Not no-referrer: browsers then send "Origin: null" on the login form POST,
+	// which fails both the CORS allow list and the cross-origin check.
+	h.Set("Referrer-Policy", "same-origin")
 	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+nonce+"'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())

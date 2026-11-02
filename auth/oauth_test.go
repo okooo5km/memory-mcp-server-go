@@ -1256,7 +1256,7 @@ func TestHTMLSecurityHeaders(t *testing.T) {
 			"Cache-Control":          "no-store",
 			"X-Frame-Options":        "DENY",
 			"X-Content-Type-Options": "nosniff",
-			"Referrer-Policy":        "no-referrer",
+			"Referrer-Policy":        "same-origin",
 		} {
 			if h.Get(k) != want {
 				t.Errorf("%s: %s = %q", name, k, h.Get(k))
