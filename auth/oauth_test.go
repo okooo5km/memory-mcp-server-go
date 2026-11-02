@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -959,13 +960,35 @@ func TestRegisterRedirectURIValidation(t *testing.T) {
 	}
 }
 
-func TestRegisterRejectsConfidentialAuthMethod(t *testing.T) {
+func TestRegisterReplacesUnsupportedMetadata(t *testing.T) {
 	_, mux := setupTestServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"redirect_uris":["https://a.example.com/cb"],"token_endpoint_auth_method":"client_secret_basic"}`))
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"redirect_uris":["https://a.example.com/cb"],"token_endpoint_auth_method":"client_secret_basic","grant_types":["authorization_code","client_credentials","refresh_token"],"response_types":["code","token"]}`))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-	if w.Code != 400 || jsonBody(t, w)["error"] != "invalid_client_metadata" {
+	if w.Code != 201 {
 		t.Fatalf("got %d %s", w.Code, w.Body.String())
+	}
+	body := jsonBody(t, w)
+	if body["token_endpoint_auth_method"] != "none" || body["client_secret"] != nil {
+		t.Errorf("auth method not replaced: %v", body)
+	}
+	if got := fmt.Sprint(body["grant_types"]); got != "[authorization_code refresh_token]" {
+		t.Errorf("grant_types = %s", got)
+	}
+	if got := fmt.Sprint(body["response_types"]); got != "[code]" {
+		t.Errorf("response_types = %s", got)
+	}
+}
+
+func TestRegisterRejectsUnusableMetadata(t *testing.T) {
+	_, mux := setupTestServer(t)
+	for _, extra := range []string{`"grant_types":["client_credentials"]`, `"response_types":["token"]`} {
+		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"redirect_uris":["https://a.example.com/cb"],`+extra+`}`))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != 400 || jsonBody(t, w)["error"] != "invalid_client_metadata" {
+			t.Errorf("%s: got %d %s", extra, w.Code, w.Body.String())
+		}
 	}
 }
 

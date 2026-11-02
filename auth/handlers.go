@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -88,11 +89,10 @@ func (s *OAuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 
 	var req struct {
-		ClientName              string   `json:"client_name"`
-		RedirectURIs            []string `json:"redirect_uris"`
-		GrantTypes              []string `json:"grant_types"`
-		ResponseTypes           []string `json:"response_types"`
-		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+		ClientName    string   `json:"client_name"`
+		RedirectURIs  []string `json:"redirect_uris"`
+		GrantTypes    []string `json:"grant_types"`
+		ResponseTypes []string `json:"response_types"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		if isBodyTooLarge(err) {
@@ -117,10 +117,6 @@ func (s *OAuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.TokenEndpointAuthMethod != "" && req.TokenEndpointAuthMethod != "none" {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "only token_endpoint_auth_method \"none\" is supported")
-		return
-	}
 
 	// Defaults
 	if len(req.GrantTypes) == 0 {
@@ -129,17 +125,20 @@ func (s *OAuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if len(req.ResponseTypes) == 0 {
 		req.ResponseTypes = []string{"code"}
 	}
-	for _, g := range req.GrantTypes {
-		if g != "authorization_code" && g != "refresh_token" {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported grant_type "+strconv.Quote(g))
-			return
-		}
+	// RFC 7591 section 3.2.1: the server may replace requested metadata, and the
+	// response tells the client what it got. Unsupported values are dropped, and
+	// the auth method is always "none", so that clients which ask for more than
+	// a public client can have still register. Refuse only when nothing usable
+	// is left.
+	req.GrantTypes = keepSupported(req.GrantTypes, "authorization_code", "refresh_token")
+	if len(req.GrantTypes) == 0 {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "grant_types must include authorization_code or refresh_token")
+		return
 	}
-	for _, t := range req.ResponseTypes {
-		if t != "code" {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported response_type "+strconv.Quote(t))
-			return
-		}
+	req.ResponseTypes = keepSupported(req.ResponseTypes, "code")
+	if len(req.ResponseTypes) == 0 {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "response_types must include code")
+		return
 	}
 
 	clientID, err := generateToken(16) // 32 hex chars
@@ -175,6 +174,13 @@ func (s *OAuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	setNoStore(w)
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// keepSupported returns the values that appear in supported, in their original order.
+func keepSupported(values []string, supported ...string) []string {
+	return slices.DeleteFunc(slices.Clone(values), func(v string) bool {
+		return !slices.Contains(supported, v)
+	})
 }
 
 // --- 4 & 5. Authorization Endpoint ---

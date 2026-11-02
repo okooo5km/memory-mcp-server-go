@@ -83,7 +83,7 @@ The path-suffixed metadata location follows the MCP endpoint (`--http-endpoint`)
 - **PKCE with `S256` is mandatory.** Authorization requests without a `code_challenge`, or with another method, are rejected.
 - **Resource indicators (RFC 8707).** The `resource` parameter, if sent, must identify this server (`<public URL>/mcp`); anything else is rejected with `invalid_target`.
 - **Scope.** The single scope is `mcp`.
-- **Public clients only.** The token endpoint authentication method is `none`; there are no client secrets.
+- **Public clients only.** The token endpoint authentication method is `none`; there are no client secrets. A registration asking for another method, or for unsupported grant or response types alongside supported ones, succeeds with those values replaced, and the response states what applies.
 - **Redirect URIs** must be `https`, a loopback `http` URL, or a custom scheme for native clients (such as `cursor://` or `com.example.app:/cb`). Dangerous schemes such as `javascript:` are refused.
 
 ### Client ID Metadata Documents
