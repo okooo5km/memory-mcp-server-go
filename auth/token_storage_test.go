@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -518,4 +519,96 @@ func TestConcurrentRefreshSamePair(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTokenPersistFailureIsReported(t *testing.T) {
+	srv, err := NewOAuthServerWithError(Config{Username: "a", Password: "b", StorePath: filepath.Join(t.TempDir(), "oauth.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Close)
+	if err := srv.store.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.tokens.PutAccessToken("tok", "c", time.Now().Add(time.Hour), ""); err == nil {
+		t.Error("PutAccessToken should fail on a closed store")
+	}
+	if err := srv.tokens.PutRefreshToken("tok", "c", time.Now().Add(time.Hour)); err == nil {
+		t.Error("PutRefreshToken should fail on a closed store")
+	}
+	if len(srv.tokens.accessTokens) != 0 || len(srv.tokens.refreshTokens) != 0 {
+		t.Error("tokens that failed to persist must not be usable")
+	}
+
+	w := httptest.NewRecorder()
+	srv.issueTokenPair(w, "c")
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "server_error") {
+		t.Errorf("got %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "access_token") {
+		t.Errorf("tokens handed out after a failed write: %s", w.Body.String())
+	}
+}
+
+// revokingStore revokes the token right after the first read, which is when a
+// concurrent revocation could overtake a cache fill.
+type revokingStore struct {
+	persistentTokenStore
+	revoke func()
+	once   sync.Once
+}
+
+func (r *revokingStore) getAccessToken(h string) (*TokenEntry, bool) {
+	t, ok := r.persistentTokenStore.getAccessToken(h)
+	r.once.Do(r.revoke)
+	return t, ok
+}
+
+func (r *revokingStore) getRefreshToken(h string) (*RefreshTokenEntry, bool) {
+	t, ok := r.persistentTokenStore.getRefreshToken(h)
+	r.once.Do(r.revoke)
+	return t, ok
+}
+
+func TestRevocationDuringCacheFillSticks(t *testing.T) {
+	newStore := func(t *testing.T) *persistentStore {
+		t.Helper()
+		store, err := openPersistentStore(filepath.Join(t.TempDir(), "oauth.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.close() })
+		return store
+	}
+	exp := time.Now().Add(time.Hour)
+
+	t.Run("access", func(t *testing.T) {
+		store := newStore(t)
+		if err := store.putAccessToken(&TokenEntry{TokenHash: hashToken("tok"), ClientID: "c", ExpiresAt: exp}); err != nil {
+			t.Fatal(err)
+		}
+		tokens := newTokenStore()
+		tokens.persist = &revokingStore{persistentTokenStore: store, revoke: func() { tokens.DeleteAccessToken("tok") }}
+		if _, ok := tokens.GetAccessToken("tok"); ok {
+			t.Error("revoked token returned")
+		}
+		if _, ok := tokens.GetAccessToken("tok"); ok {
+			t.Error("revoked token came back from the cache")
+		}
+	})
+	t.Run("refresh", func(t *testing.T) {
+		store := newStore(t)
+		if err := store.putRefreshToken(&RefreshTokenEntry{TokenHash: hashToken("tok"), ClientID: "c", ExpiresAt: exp}); err != nil {
+			t.Fatal(err)
+		}
+		tokens := newTokenStore()
+		tokens.persist = &revokingStore{persistentTokenStore: store, revoke: func() { tokens.DeleteRefreshToken("tok") }}
+		if _, ok := tokens.GetRefreshToken("tok"); ok {
+			t.Error("revoked token returned")
+		}
+		if _, ok := tokens.GetRefreshToken("tok"); ok {
+			t.Error("revoked token came back from the cache")
+		}
+	})
 }

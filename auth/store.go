@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"sync"
 	"time"
 )
@@ -224,7 +225,9 @@ func newTokenStore() *TokenStore {
 }
 
 // PutAccessToken stores an access token linked to refreshToken ("" for none).
-func (s *TokenStore) PutAccessToken(token, clientID string, expiresAt time.Time, refreshToken string) {
+// It fails if the token could not be persisted, so that the caller does not hand
+// out a token that would vanish on restart.
+func (s *TokenStore) PutAccessToken(token, clientID string, expiresAt time.Time, refreshToken string) error {
 	t := &TokenEntry{
 		TokenHash:   hashToken(token),
 		ClientID:    clientID,
@@ -233,10 +236,13 @@ func (s *TokenStore) PutAccessToken(token, clientID string, expiresAt time.Time,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.accessTokens[t.TokenHash] = t
 	if s.persist != nil {
-		_ = s.persist.putAccessToken(t)
+		if err := s.persist.putAccessToken(t); err != nil {
+			return err
+		}
 	}
+	s.accessTokens[t.TokenHash] = t
+	return nil
 }
 
 func (s *TokenStore) GetAccessToken(token string) (*TokenEntry, bool) {
@@ -247,13 +253,19 @@ func (s *TokenStore) GetAccessToken(token string) (*TokenEntry, bool) {
 	if ok {
 		return t, true
 	}
-	if s.persist != nil {
-		t, ok = s.persist.getAccessToken(h)
-		if ok {
-			s.mu.Lock()
-			s.accessTokens[h] = t
-			s.mu.Unlock()
-		}
+	if s.persist == nil {
+		return nil, false
+	}
+	if _, ok := s.persist.getAccessToken(h); !ok {
+		return nil, false
+	}
+	// Fill the cache from a read made under the write lock: an earlier read could
+	// have been overtaken by a revocation, and caching it would undo that.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok = s.persist.getAccessToken(h)
+	if ok {
+		s.accessTokens[h] = t
 	}
 	return t, ok
 }
@@ -264,11 +276,13 @@ func (s *TokenStore) DeleteAccessToken(token string) {
 	defer s.mu.Unlock()
 	delete(s.accessTokens, h)
 	if s.persist != nil {
-		_ = s.persist.deleteAccessToken(h)
+		logStoreDelete(s.persist.deleteAccessToken(h))
 	}
 }
 
-func (s *TokenStore) PutRefreshToken(token, clientID string, expiresAt time.Time) {
+// PutRefreshToken stores a refresh token. Like PutAccessToken, it fails if the
+// token could not be persisted.
+func (s *TokenStore) PutRefreshToken(token, clientID string, expiresAt time.Time) error {
 	t := &RefreshTokenEntry{
 		TokenHash: hashToken(token),
 		ClientID:  clientID,
@@ -276,10 +290,13 @@ func (s *TokenStore) PutRefreshToken(token, clientID string, expiresAt time.Time
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshTokens[t.TokenHash] = t
 	if s.persist != nil {
-		_ = s.persist.putRefreshToken(t)
+		if err := s.persist.putRefreshToken(t); err != nil {
+			return err
+		}
 	}
+	s.refreshTokens[t.TokenHash] = t
+	return nil
 }
 
 func (s *TokenStore) GetRefreshToken(token string) (*RefreshTokenEntry, bool) {
@@ -290,13 +307,18 @@ func (s *TokenStore) GetRefreshToken(token string) (*RefreshTokenEntry, bool) {
 	if ok {
 		return t, true
 	}
-	if s.persist != nil {
-		t, ok = s.persist.getRefreshToken(h)
-		if ok {
-			s.mu.Lock()
-			s.refreshTokens[h] = t
-			s.mu.Unlock()
-		}
+	if s.persist == nil {
+		return nil, false
+	}
+	if _, ok := s.persist.getRefreshToken(h); !ok {
+		return nil, false
+	}
+	// Under the write lock for the same reason as in GetAccessToken.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok = s.persist.getRefreshToken(h)
+	if ok {
+		s.refreshTokens[h] = t
 	}
 	return t, ok
 }
@@ -307,7 +329,15 @@ func (s *TokenStore) DeleteRefreshToken(token string) {
 	defer s.mu.Unlock()
 	delete(s.refreshTokens, h)
 	if s.persist != nil {
-		_ = s.persist.deleteRefreshToken(h)
+		logStoreDelete(s.persist.deleteRefreshToken(h))
+	}
+}
+
+// logStoreDelete reports a failed delete. A revoked token gone from memory but
+// not from the store comes back on restart, so the operator has to know.
+func logStoreDelete(err error) {
+	if err != nil {
+		log.Printf("OAuth store: failed to delete a revoked token, it stays valid after a restart: %v", err)
 	}
 }
 
@@ -372,8 +402,8 @@ func (s *TokenStore) RevokeRefreshToken(token string) {
 		}
 		delete(s.refreshTokens, rth)
 		if s.persist != nil {
-			_ = s.persist.deleteAccessTokensByRefresh(rth)
-			_ = s.persist.deleteRefreshToken(rth)
+			logStoreDelete(s.persist.deleteAccessTokensByRefresh(rth))
+			logStoreDelete(s.persist.deleteRefreshToken(rth))
 		}
 	}
 }

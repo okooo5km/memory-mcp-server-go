@@ -519,8 +519,17 @@ func (s *OAuthServer) issueTokenPair(w http.ResponseWriter, clientID string) {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
-	s.tokens.PutAccessToken(pair.AccessToken, clientID, pair.AccessExpiresAt, pair.RefreshToken)
-	s.tokens.PutRefreshToken(pair.RefreshToken, clientID, pair.RefreshExpiresAt)
+	if err := s.tokens.PutAccessToken(pair.AccessToken, clientID, pair.AccessExpiresAt, pair.RefreshToken); err != nil {
+		log.Printf("OAuth token issue failed: client_id=%s error=%v", shortOAuthID(clientID), err)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to store token")
+		return
+	}
+	if err := s.tokens.PutRefreshToken(pair.RefreshToken, clientID, pair.RefreshExpiresAt); err != nil {
+		log.Printf("OAuth token issue failed: client_id=%s error=%v", shortOAuthID(clientID), err)
+		s.tokens.DeleteAccessToken(pair.AccessToken)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to store token")
+		return
+	}
 	s.writeTokenPair(w, pair)
 }
 
