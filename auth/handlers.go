@@ -481,6 +481,9 @@ func (s *OAuthServer) handleTokenRefresh(w http.ResponseWriter, r *http.Request)
 		case errors.Is(err, errRefreshClientMismatch):
 			log.Printf("OAuth refresh failed: client_id=%s reason=client_mismatch", shortOAuthID(clientID))
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "client_id mismatch")
+		case errors.Is(err, errReplayUnseal):
+			log.Printf("OAuth refresh failed: client_id=%s reason=replay_unseal_failed", shortOAuthID(clientID))
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "invalid or expired refresh token")
 		case errors.Is(err, errInvalidRefreshToken):
 			log.Printf("OAuth refresh failed: client_id=%s reason=invalid_or_expired_refresh_token", shortOAuthID(clientID))
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "invalid or expired refresh token")
@@ -510,17 +513,8 @@ func (s *OAuthServer) issueTokenPair(w http.ResponseWriter, clientID string) {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "internal error")
 		return
 	}
-	s.tokens.PutAccessToken(&TokenEntry{
-		Token:        pair.AccessToken,
-		ClientID:     clientID,
-		ExpiresAt:    pair.AccessExpiresAt,
-		RefreshToken: pair.RefreshToken,
-	})
-	s.tokens.PutRefreshToken(&RefreshTokenEntry{
-		Token:     pair.RefreshToken,
-		ClientID:  clientID,
-		ExpiresAt: pair.RefreshExpiresAt,
-	})
+	s.tokens.PutAccessToken(pair.AccessToken, clientID, pair.AccessExpiresAt, pair.RefreshToken)
+	s.tokens.PutRefreshToken(pair.RefreshToken, clientID, pair.RefreshExpiresAt)
 	s.writeTokenPair(w, pair)
 }
 

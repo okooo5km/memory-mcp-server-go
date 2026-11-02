@@ -124,6 +124,10 @@ Without an OAuth store, clients and tokens are held in memory and are lost on re
   --host 127.0.0.1
 ```
 
+**Tokens are never stored in plaintext.** Access and refresh tokens are persisted (and held in memory) only as SHA-256 hashes, so a stolen `oauth.db` or backup contains no usable token. The replacement pair kept for the refresh replay grace window is encrypted with AES-256-GCM under a key derived (HKDF-SHA256) from the old refresh token, so only the holder of that old token, which is exactly the client replay is meant for, can recover it. Deleted rows are overwritten (`secure_delete`).
+
+**Upgrading is automatic and one-way.** On first start the server converts a legacy plaintext store in a single transaction (all-or-nothing; a failure aborts startup and leaves the file untouched), then checkpoints the WAL and runs `VACUUM` so the old plaintext does not linger in the file. Logged-in clients keep working, including replay of just-rotated tokens. A store written by a newer schema version is refused with an error. An older binary cannot read the upgraded store: on downgrade, restore a pre-upgrade backup, or delete `oauth.db` (clients then have to log in again).
+
 The OAuth store file is forced to `0600` when opened. For systemd deployments, also set `UMask=0077` so SQLite sidecar files such as `oauth.db-wal` and `oauth.db-shm` are created with private permissions.
 
 ## Claude Desktop Integration

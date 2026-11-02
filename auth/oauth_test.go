@@ -349,11 +349,7 @@ func TestRefreshReplayExpiresAfterGrace(t *testing.T) {
 	clientID := registerTestClient(t, mux)
 
 	refreshToken, _ := generateToken(32)
-	srv.tokens.PutRefreshToken(&RefreshTokenEntry{
-		Token:     refreshToken,
-		ClientID:  clientID,
-		ExpiresAt: timeNow().Add(refreshTokenTTL),
-	})
+	srv.tokens.PutRefreshToken(refreshToken, clientID, timeNow().Add(refreshTokenTTL))
 
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
@@ -386,11 +382,7 @@ func TestDefaultRefreshReplayGraceCoversStaleWorker(t *testing.T) {
 	clientID := "codex-client"
 	refreshToken := "refresh-old"
 	now := time.Date(2026, 5, 27, 7, 4, 48, 0, time.UTC)
-	tokens.PutRefreshToken(&RefreshTokenEntry{
-		Token:     refreshToken,
-		ClientID:  clientID,
-		ExpiresAt: now.Add(refreshTokenTTL),
-	})
+	tokens.PutRefreshToken(refreshToken, clientID, now.Add(refreshTokenTTL))
 
 	pair, err := tokens.RotateRefreshToken(refreshToken, clientID, now, defaultRefreshReplayGrace, func() (*TokenPair, error) {
 		return &TokenPair{
@@ -570,11 +562,7 @@ func registerTestClient(t *testing.T, mux *http.ServeMux) string {
 func issueTestToken(t *testing.T, srv *OAuthServer, clientID string) string {
 	t.Helper()
 	tok, _ := generateToken(32)
-	srv.tokens.PutAccessToken(&TokenEntry{
-		Token:     tok,
-		ClientID:  clientID,
-		ExpiresAt: time.Now().Add(accessTokenTTL),
-	})
+	srv.tokens.PutAccessToken(tok, clientID, time.Now().Add(accessTokenTTL), "")
 	return tok
 }
 
@@ -582,17 +570,8 @@ func issueTestTokenPair(t *testing.T, srv *OAuthServer, clientID string) (string
 	t.Helper()
 	accessToken, _ := generateToken(32)
 	refreshToken, _ := generateToken(32)
-	srv.tokens.PutAccessToken(&TokenEntry{
-		Token:        accessToken,
-		ClientID:     clientID,
-		ExpiresAt:    timeNow().Add(accessTokenTTL),
-		RefreshToken: refreshToken,
-	})
-	srv.tokens.PutRefreshToken(&RefreshTokenEntry{
-		Token:     refreshToken,
-		ClientID:  clientID,
-		ExpiresAt: timeNow().Add(refreshTokenTTL),
-	})
+	srv.tokens.PutAccessToken(accessToken, clientID, timeNow().Add(accessTokenTTL), refreshToken)
+	srv.tokens.PutRefreshToken(refreshToken, clientID, timeNow().Add(refreshTokenTTL))
 	return accessToken, refreshToken
 }
 
@@ -1212,10 +1191,10 @@ func TestRevocationPersistentStore(t *testing.T) {
 	if c := postForm(mux2, "/revoke", url.Values{"token": {refresh}, "client_id": {cid}}).Code; c != 200 {
 		t.Fatalf("revoke: %d", c)
 	}
-	if _, ok := srv2.store.getAccessToken(access); ok {
+	if _, ok := srv2.store.getAccessToken(hashToken(access)); ok {
 		t.Error("persisted access token should be deleted")
 	}
-	if _, ok := srv2.store.getRefreshToken(refresh); ok {
+	if _, ok := srv2.store.getRefreshToken(hashToken(refresh)); ok {
 		t.Error("persisted refresh token should be deleted")
 	}
 	if _, err := srv2.verifyToken(nil, access, nil); err == nil {

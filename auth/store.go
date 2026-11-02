@@ -4,6 +4,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sync"
 	"time"
@@ -13,7 +15,24 @@ var (
 	errInvalidRefreshToken   = errors.New("invalid or expired refresh token")
 	errRefreshClientMismatch = errors.New("client_id mismatch")
 	errInvalidAuthCode       = errors.New("invalid, expired or already used authorization code")
+	errReplayUnseal          = errors.New("refresh replay data cannot be decrypted")
 )
+
+// hashToken returns the storage key for an opaque token: hex(sha256(token)).
+// SHA-256 is sufficient (no salt or stretching) because tokens are 256-bit
+// random values, so the hash cannot be brute-forced back to the token.
+func hashToken(t string) string {
+	sum := sha256.Sum256([]byte(t))
+	return hex.EncodeToString(sum[:])
+}
+
+// hashTokenOrEmpty is hashToken that keeps an absent token absent.
+func hashTokenOrEmpty(t string) string {
+	if t == "" {
+		return ""
+	}
+	return hashToken(t)
+}
 
 // OAuthClient represents a dynamically registered OAuth client (RFC 7591).
 type OAuthClient struct {
@@ -31,16 +50,18 @@ type persistentClientStore interface {
 	getClient(clientID string) (*OAuthClient, bool)
 }
 
+// persistentTokenStore persists token entries. Every token argument is the
+// hex SHA-256 hash of the token, never the token itself.
 type persistentTokenStore interface {
 	putAccessToken(*TokenEntry) error
-	getAccessToken(token string) (*TokenEntry, bool)
-	deleteAccessToken(token string) error
+	getAccessToken(tokenHash string) (*TokenEntry, bool)
+	deleteAccessToken(tokenHash string) error
 	putRefreshToken(*RefreshTokenEntry) error
-	getRefreshToken(token string) (*RefreshTokenEntry, bool)
-	deleteRefreshToken(token string) error
-	deleteAccessTokensByRefresh(refreshToken string) error
-	findReplacedRefresh(replacementRefresh string) (string, bool)
-	rotateRefreshToken(oldRefreshToken string, access *TokenEntry, replacementRefresh *RefreshTokenEntry, oldRefresh *RefreshTokenEntry) error
+	getRefreshToken(tokenHash string) (*RefreshTokenEntry, bool)
+	deleteRefreshToken(tokenHash string) error
+	deleteAccessTokensByRefresh(refreshHash string) error
+	findReplacedRefresh(replacementRefreshHash string) (string, bool)
+	rotateRefreshToken(oldRefreshHash string, access *TokenEntry, replacementRefresh *RefreshTokenEntry, oldRefresh *RefreshTokenEntry) error
 }
 
 // AuthorizationCode represents a pending authorization code.
@@ -56,22 +77,25 @@ type AuthorizationCode struct {
 	Used                bool
 }
 
-// TokenEntry represents an issued access token.
+// TokenEntry represents an issued access token. It holds only hashes.
 type TokenEntry struct {
-	Token        string
-	ClientID     string
-	ExpiresAt    time.Time
-	RefreshToken string // associated refresh token
+	TokenHash   string
+	ClientID    string
+	ExpiresAt   time.Time
+	RefreshHash string // hash of the associated refresh token, "" if none
 }
 
-// RefreshTokenEntry represents an issued refresh token.
+// RefreshTokenEntry represents an issued refresh token. It holds only hashes;
+// the replacement pair needed for replay is sealed with a key derived from the
+// (now rotated) refresh token itself.
 type RefreshTokenEntry struct {
-	Token                      string
+	TokenHash                  string
 	ClientID                   string
 	ExpiresAt                  time.Time
 	ReplacedAt                 time.Time
-	ReplacementAccessToken     string
-	ReplacementRefreshToken    string
+	ReplacementAccessHash      string
+	ReplacementRefreshHash     string
+	ReplacementSealed          []byte
 	ReplacementAccessExpiresAt time.Time
 }
 
@@ -183,11 +207,12 @@ func (s *CodeStore) cleanup() {
 	}
 }
 
-// TokenStore manages access tokens and refresh tokens in memory.
+// TokenStore manages access tokens and refresh tokens. Callers pass plaintext
+// tokens; everything stored (in memory or durably) is keyed by their hash.
 type TokenStore struct {
 	mu            sync.RWMutex
-	accessTokens  map[string]*TokenEntry        // keyed by access token
-	refreshTokens map[string]*RefreshTokenEntry // keyed by refresh token
+	accessTokens  map[string]*TokenEntry        // keyed by access token hash
+	refreshTokens map[string]*RefreshTokenEntry // keyed by refresh token hash
 	persist       persistentTokenStore
 }
 
@@ -198,27 +223,35 @@ func newTokenStore() *TokenStore {
 	}
 }
 
-func (s *TokenStore) PutAccessToken(t *TokenEntry) {
+// PutAccessToken stores an access token linked to refreshToken ("" for none).
+func (s *TokenStore) PutAccessToken(token, clientID string, expiresAt time.Time, refreshToken string) {
+	t := &TokenEntry{
+		TokenHash:   hashToken(token),
+		ClientID:    clientID,
+		ExpiresAt:   expiresAt,
+		RefreshHash: hashTokenOrEmpty(refreshToken),
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.accessTokens[t.Token] = t
+	s.accessTokens[t.TokenHash] = t
 	if s.persist != nil {
 		_ = s.persist.putAccessToken(t)
 	}
 }
 
 func (s *TokenStore) GetAccessToken(token string) (*TokenEntry, bool) {
+	h := hashToken(token)
 	s.mu.RLock()
-	t, ok := s.accessTokens[token]
+	t, ok := s.accessTokens[h]
 	s.mu.RUnlock()
 	if ok {
 		return t, true
 	}
 	if s.persist != nil {
-		t, ok = s.persist.getAccessToken(token)
+		t, ok = s.persist.getAccessToken(h)
 		if ok {
 			s.mu.Lock()
-			s.accessTokens[token] = t
+			s.accessTokens[h] = t
 			s.mu.Unlock()
 		}
 	}
@@ -226,35 +259,42 @@ func (s *TokenStore) GetAccessToken(token string) (*TokenEntry, bool) {
 }
 
 func (s *TokenStore) DeleteAccessToken(token string) {
+	h := hashToken(token)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.accessTokens, token)
+	delete(s.accessTokens, h)
 	if s.persist != nil {
-		_ = s.persist.deleteAccessToken(token)
+		_ = s.persist.deleteAccessToken(h)
 	}
 }
 
-func (s *TokenStore) PutRefreshToken(t *RefreshTokenEntry) {
+func (s *TokenStore) PutRefreshToken(token, clientID string, expiresAt time.Time) {
+	t := &RefreshTokenEntry{
+		TokenHash: hashToken(token),
+		ClientID:  clientID,
+		ExpiresAt: expiresAt,
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refreshTokens[t.Token] = t
+	s.refreshTokens[t.TokenHash] = t
 	if s.persist != nil {
 		_ = s.persist.putRefreshToken(t)
 	}
 }
 
 func (s *TokenStore) GetRefreshToken(token string) (*RefreshTokenEntry, bool) {
+	h := hashToken(token)
 	s.mu.RLock()
-	t, ok := s.refreshTokens[token]
+	t, ok := s.refreshTokens[h]
 	s.mu.RUnlock()
 	if ok {
 		return t, true
 	}
 	if s.persist != nil {
-		t, ok = s.persist.getRefreshToken(token)
+		t, ok = s.persist.getRefreshToken(h)
 		if ok {
 			s.mu.Lock()
-			s.refreshTokens[token] = t
+			s.refreshTokens[h] = t
 			s.mu.Unlock()
 		}
 	}
@@ -262,34 +302,36 @@ func (s *TokenStore) GetRefreshToken(token string) (*RefreshTokenEntry, bool) {
 }
 
 func (s *TokenStore) DeleteRefreshToken(token string) {
+	h := hashToken(token)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.refreshTokens, token)
+	delete(s.refreshTokens, h)
 	if s.persist != nil {
-		_ = s.persist.deleteRefreshToken(token)
+		_ = s.persist.deleteRefreshToken(h)
 	}
 }
 
-// lookupRefreshLocked finds a refresh token in memory or the persistent store.
-func (s *TokenStore) lookupRefreshLocked(token string) (*RefreshTokenEntry, bool) {
-	if rt, ok := s.refreshTokens[token]; ok {
+// lookupRefreshLocked finds a refresh token by hash in memory or the persistent store.
+func (s *TokenStore) lookupRefreshLocked(hash string) (*RefreshTokenEntry, bool) {
+	if rt, ok := s.refreshTokens[hash]; ok {
 		return rt, true
 	}
 	if s.persist != nil {
-		return s.persist.getRefreshToken(token)
+		return s.persist.getRefreshToken(hash)
 	}
 	return nil, false
 }
 
-// predecessorLocked returns the refresh token that was rotated into token.
-func (s *TokenStore) predecessorLocked(token string) string {
+// predecessorLocked returns the hash of the refresh token that was rotated
+// into the refresh token with the given hash.
+func (s *TokenStore) predecessorLocked(hash string) string {
 	for k, rt := range s.refreshTokens {
-		if rt.ReplacementRefreshToken == token {
+		if rt.ReplacementRefreshHash == hash {
 			return k
 		}
 	}
 	if s.persist != nil {
-		if k, ok := s.persist.findReplacedRefresh(token); ok {
+		if k, ok := s.persist.findReplacedRefresh(hash); ok {
 			return k
 		}
 	}
@@ -304,16 +346,17 @@ func (s *TokenStore) RevokeRefreshToken(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	start := hashToken(token)
 	chain := map[string]bool{}
-	for cur := token; cur != "" && !chain[cur]; {
+	for cur := start; cur != "" && !chain[cur]; {
 		chain[cur] = true
 		rt, ok := s.lookupRefreshLocked(cur)
 		if !ok {
 			break
 		}
-		cur = rt.ReplacementRefreshToken
+		cur = rt.ReplacementRefreshHash
 	}
-	for cur := token; cur != ""; {
+	for cur := start; cur != ""; {
 		pred := s.predecessorLocked(cur)
 		if pred == "" || chain[pred] {
 			break
@@ -321,32 +364,34 @@ func (s *TokenStore) RevokeRefreshToken(token string) {
 		chain[pred] = true
 		cur = pred
 	}
-	for rtk := range chain {
+	for rth := range chain {
 		for k, at := range s.accessTokens {
-			if at.RefreshToken == rtk {
+			if at.RefreshHash == rth {
 				delete(s.accessTokens, k)
 			}
 		}
-		delete(s.refreshTokens, rtk)
+		delete(s.refreshTokens, rth)
 		if s.persist != nil {
-			_ = s.persist.deleteAccessTokensByRefresh(rtk)
-			_ = s.persist.deleteRefreshToken(rtk)
+			_ = s.persist.deleteAccessTokensByRefresh(rth)
+			_ = s.persist.deleteRefreshToken(rth)
 		}
 	}
 }
 
 // RotateRefreshToken atomically rotates a refresh token. The replay grace window
 // returns the same replacement pair for stale or concurrent refresh attempts from
-// clients that share token cache state imperfectly.
+// clients that share token cache state imperfectly. The replacement pair is kept
+// only in sealed form, decryptable with the rotated refresh token.
 func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.Time, replayGrace time.Duration, issue func() (*TokenPair, error)) (*TokenPair, error) {
+	h := hashToken(refreshToken)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rt, ok := s.refreshTokens[refreshToken]
+	rt, ok := s.refreshTokens[h]
 	if !ok && s.persist != nil {
-		rt, ok = s.persist.getRefreshToken(refreshToken)
+		rt, ok = s.persist.getRefreshToken(h)
 		if ok {
-			s.refreshTokens[refreshToken] = rt
+			s.refreshTokens[h] = rt
 		}
 	}
 	if !ok || now.After(rt.ExpiresAt) {
@@ -356,19 +401,19 @@ func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.
 		return nil, errRefreshClientMismatch
 	}
 	if !rt.ReplacedAt.IsZero() {
-		if now.Sub(rt.ReplacedAt) <= replayGrace && rt.ReplacementAccessToken != "" && rt.ReplacementRefreshToken != "" {
+		if now.Sub(rt.ReplacedAt) <= replayGrace && len(rt.ReplacementSealed) > 0 {
+			access, refresh, err := unsealReplacement(refreshToken, rt.ReplacementSealed)
+			if err != nil {
+				return nil, errReplayUnseal
+			}
 			refreshExpiresAt := now.Add(refreshTokenTTL)
-			if replacement, ok := s.refreshTokens[rt.ReplacementRefreshToken]; ok {
+			if replacement, ok := s.lookupRefreshLocked(rt.ReplacementRefreshHash); ok {
 				refreshExpiresAt = replacement.ExpiresAt
-			} else if s.persist != nil {
-				if replacement, ok := s.persist.getRefreshToken(rt.ReplacementRefreshToken); ok {
-					refreshExpiresAt = replacement.ExpiresAt
-					s.refreshTokens[rt.ReplacementRefreshToken] = replacement
-				}
+				s.refreshTokens[rt.ReplacementRefreshHash] = replacement
 			}
 			return &TokenPair{
-				AccessToken:      rt.ReplacementAccessToken,
-				RefreshToken:     rt.ReplacementRefreshToken,
+				AccessToken:      access,
+				RefreshToken:     refresh,
 				AccessExpiresAt:  rt.ReplacementAccessExpiresAt,
 				RefreshExpiresAt: refreshExpiresAt,
 				Replayed:         true,
@@ -381,30 +426,36 @@ func (s *TokenStore) RotateRefreshToken(refreshToken, clientID string, now time.
 	if err != nil {
 		return nil, err
 	}
+	sealed, err := sealReplacement(refreshToken, pair.AccessToken, pair.RefreshToken)
+	if err != nil {
+		return nil, err
+	}
 	access := &TokenEntry{
-		Token:        pair.AccessToken,
-		ClientID:     clientID,
-		ExpiresAt:    pair.AccessExpiresAt,
-		RefreshToken: pair.RefreshToken,
+		TokenHash:   hashToken(pair.AccessToken),
+		ClientID:    clientID,
+		ExpiresAt:   pair.AccessExpiresAt,
+		RefreshHash: hashToken(pair.RefreshToken),
 	}
 	replacementRefresh := &RefreshTokenEntry{
-		Token:     pair.RefreshToken,
+		TokenHash: hashToken(pair.RefreshToken),
 		ClientID:  clientID,
 		ExpiresAt: pair.RefreshExpiresAt,
 	}
-	rt.ReplacedAt = now
-	rt.ReplacementAccessToken = pair.AccessToken
-	rt.ReplacementRefreshToken = pair.RefreshToken
-	rt.ReplacementAccessExpiresAt = pair.AccessExpiresAt
+	rotated := *rt
+	rotated.ReplacedAt = now
+	rotated.ReplacementAccessHash = access.TokenHash
+	rotated.ReplacementRefreshHash = replacementRefresh.TokenHash
+	rotated.ReplacementSealed = sealed
+	rotated.ReplacementAccessExpiresAt = pair.AccessExpiresAt
 
 	if s.persist != nil {
-		if err := s.persist.rotateRefreshToken(refreshToken, access, replacementRefresh, rt); err != nil {
+		if err := s.persist.rotateRefreshToken(h, access, replacementRefresh, &rotated); err != nil {
 			return nil, err
 		}
 	}
-	s.accessTokens[pair.AccessToken] = access
-	s.refreshTokens[pair.RefreshToken] = replacementRefresh
-	s.refreshTokens[refreshToken] = rt
+	s.accessTokens[access.TokenHash] = access
+	s.refreshTokens[replacementRefresh.TokenHash] = replacementRefresh
+	s.refreshTokens[h] = &rotated
 	return pair, nil
 }
 
