@@ -72,11 +72,8 @@
 </div>
 <script nonce="{{.Nonce}}">
   (function() {
-    var url = {{.RedirectURL}};
-    // Try to close the window first (works if opened by the app)
-    window.close();
-    // If still open after 2s, redirect
-    setTimeout(function() { window.location.href = url; }, 2000);
+    // Never close the window first: a popup would close and lose the code.
+    window.location.href = {{.RedirectURL}};
   })();
 </script>
 </body>
