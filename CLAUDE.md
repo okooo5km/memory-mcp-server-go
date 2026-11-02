@@ -154,7 +154,7 @@ Tests are available in `storage/search_priority_test.go`, `auth/oauth_test.go` a
 2. **MCP server** (`mcp_server.go`, `newMCPServer`), built on the official `github.com/modelcontextprotocol/go-sdk`:
    - Tools (typed `mcp.AddTool` with hand-written input schemas; handler errors surface as tool errors with `IsError=true`): create_entities, create_relations, add_observations, delete_entities, delete_relations, delete_observations, read_graph, search_nodes, open_nodes, merge_entities, update_entities, update_observations, detect_conflicts
    - Resources `memory://graph/summary`, `memory://graph/types`, template `memory://entities/{name}`; prompts `memory-recall`, `memory-save`, `memory-review`
-   - A receiving middleware converts handler panics into errors
+   - Receiving middleware converts handler panics into errors and strips null-valued arguments before schema validation
 
 3. **HTTP layer** (`http_server.go`, `newHTTPHandler`): Streamable HTTP (`--transport http`, alias `streamable-http`) or SSE (`/sse` only; the old `/message` path is gone), `GET /healthz`, CORS, Bearer/OAuth auth, and a Host guard when a public URL is set. The SDK's loopback DNS-rebinding protection stays on only for unauthenticated loopback listeners without a public URL. The SDK handles client JSON-RPC responses (202) itself.
 
