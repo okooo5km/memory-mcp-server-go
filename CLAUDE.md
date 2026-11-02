@@ -133,6 +133,7 @@ Tests are available in `storage/search_priority_test.go`, `auth/oauth_test.go` a
    - Optional SQLite-backed persistence via `--oauth-store` / `OAUTH_STORE_PATH`
    - Persistent OAuth store files are chmodded to `0600`; systemd deployments should also use `UMask=0077`
    - Refresh token rotation includes a configurable replay grace window for concurrent or stale-worker clients
+   - Rate-limit client key: `X-Real-IP` is believed only from loopback or `--trusted-proxies` / `MMS_TRUSTED_PROXIES` peers (`auth.ParseTrustedProxies`); `X-Forwarded-For` is never used
    - Periodic cleanup goroutine (every 15 minutes)
 
 4. **Token & PKCE** (auth/token.go):
@@ -157,7 +158,7 @@ Tests are available in `storage/search_priority_test.go`, `auth/oauth_test.go` a
 
 3. **HTTP layer** (`http_server.go`, `newHTTPHandler`): Streamable HTTP (`--transport http`, alias `streamable-http`) or SSE (`/sse` only; the old `/message` path is gone), `GET /healthz`, CORS, Bearer/OAuth auth, and a Host guard when a public URL is set. The SDK's loopback DNS-rebinding protection stays on only for unauthenticated loopback listeners without a public URL. The SDK handles client JSON-RPC responses (202) itself.
 
-4. **Configuration** (`config.go`, `resolveConfig`): merges flags and env (flags win) and derives defaults from `--public-url` / `MMS_PUBLIC_URL` (http transport, host 127.0.0.1, OAuth store `oauth.db` next to the memory database). Deployment: `scripts/deploy-vps.sh`, `doc/deploy.md`.
+4. **Configuration** (`config.go`, `resolveConfig`): merges flags and env (flags win) and derives defaults from `--public-url` / `MMS_PUBLIC_URL` (http transport, host 127.0.0.1, OAuth store `oauth.db` next to the memory database). Deployment: `scripts/deploy-vps.sh`, `doc/deploy.md`. **For AI agents** deploying without the script (Docker, Caddy, Traefik, existing nginx, bearer-only): follow `doc/deploy-custom.md` and run `scripts/verify-deploy.sh`.
 
 ### Command-line Arguments
 
@@ -194,6 +195,7 @@ Tests are available in `storage/search_priority_test.go`, `auth/oauth_test.go` a
   --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
   --oauth-refresh-replay-grace string
                          Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)
+  --trusted-proxies string Comma-separated CIDRs/IPs of proxies whose X-Real-IP is trusted for rate limiting (env: MMS_TRUSTED_PROXIES); loopback always trusted
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (env: MMS_CORS_ORIGIN, default "*")
 ```
 

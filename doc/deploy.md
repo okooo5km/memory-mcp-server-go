@@ -1,5 +1,7 @@
 # VPS Deployment Guide
 
+Not a fresh VPS, or you do not want the script (Docker, Caddy, Traefik, an existing nginx with other sites, Cloudflare Tunnel)? See [deploy-custom.md](deploy-custom.md): the runtime contract, recipes and acceptance checks, written so an AI agent can follow it.
+
 `scripts/deploy-vps.sh` takes a fresh Linux VPS and a domain to a working HTTPS MCP server with OAuth 2.1: the `mms` binary under systemd, nginx as the TLS-terminating reverse proxy, and a Let's Encrypt certificate that renews itself.
 
 ## Quick Start

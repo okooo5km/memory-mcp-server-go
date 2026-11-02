@@ -144,6 +144,11 @@ mms [options]
   --oauth-refresh-replay-grace string
                            Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)
 
+  Reverse proxy:
+  --trusted-proxies string Comma-separated CIDRs or IPs of reverse proxies whose X-Real-IP header is
+                           trusted for login rate limiting (env: MMS_TRUSTED_PROXIES). Loopback is
+                           always trusted. Needed when the proxy is in another container or host
+
   CORS:
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (env: MMS_CORS_ORIGIN, default "*")
 ```
@@ -272,6 +277,8 @@ curl -X DELETE http://localhost:8080/mcp \
 
 ## Security & Deployment
 
+**For AI agents:** to deploy without the script (Docker, Caddy, Traefik, an existing nginx, Cloudflare Tunnel, bearer-only), follow [doc/deploy-custom.md](doc/deploy-custom.md): runtime contract, recipes and an acceptance script (`scripts/verify-deploy.sh`).
+
 One-line VPS deployment (nginx + Let's Encrypt + systemd, OAuth 2.1 login); see [doc/deploy.md](doc/deploy.md):
 
 ```bash
@@ -283,6 +290,7 @@ curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/
 - DNS-rebinding protection: on a loopback listener without auth and without a public URL, requests with a non-loopback `Host` are rejected with `403`; it is relaxed only when a token is required or a public URL is configured
 - **Simple auth**: Use `--auth-bearer $(openssl rand -hex 32)` (or `MMS_AUTH_BEARER`) for programmatic clients; the token is compared in constant time
 - **OAuth 2.1**: Use `OAUTH_USER`/`OAUTH_PASS` (preferred over `--oauth-pass`, argv is visible in the process list) for browser-based login (Claude Desktop Connectors). With a public URL the OAuth store defaults to `oauth.db` next to the memory database; otherwise set `--oauth-store` so registered clients and tokens survive restarts, and run the service with a restrictive umask such as systemd `UMask=0077` to protect SQLite WAL/SHM files. Supports PKCE (S256, required), resource indicators, dynamic client registration and Client ID Metadata Documents, durable token storage, token revocation, and refresh token rotation with a replay grace window for concurrent or multi-worker clients. See [doc/oauth.md](doc/oauth.md)
+- **Proxy in another container or host**: the login rate limiter keys on the client address. It believes `X-Real-IP` only from loopback and from peers listed in `--trusted-proxies` / `MMS_TRUSTED_PROXIES` (CIDRs or IPs, e.g. `172.20.0.0/16`); otherwise every user shares the proxy's address and five bad logins lock everybody out. `X-Forwarded-For` is never used. An invalid value is a startup error
 - Run as non-root, open only required ports, enable rate limiting for untrusted clients
 
 ## Storage System

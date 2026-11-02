@@ -6,7 +6,7 @@
 - `mcp_server.go`: `newMCPServer` with the 13 tools, resources and prompts (official `modelcontextprotocol/go-sdk`).
 - `http_server.go`: `newHTTPHandler` for the `http`/`sse` transports (auth, CORS, Host guard, `/healthz`), graceful serving.
 - `auth/`: OAuth 2.1 authorization server (see `doc/oauth.md`).
-- `scripts/deploy-vps.sh`, `doc/deploy.md`: one-line VPS deployment (nginx, Let's Encrypt, systemd).
+- `scripts/deploy-vps.sh`, `doc/deploy.md`: one-line VPS deployment (nginx, Let's Encrypt, systemd). `doc/deploy-custom.md`, `scripts/verify-deploy.sh`: script-free deployment contract, recipes and acceptance checks.
 - `storage/`: Storage interfaces and backends (`sqlite.go`, `jsonl.go`, `migration.go`).
 - `scripts/install.sh`: Cross-platform installer for release binaries.
 - `Makefile`: Standard build, format, verify, and cross-compile targets.
@@ -105,5 +105,6 @@ make fmt && make check && go test ./... && make build
 - For multi-worker clients such as Codex, tune `--oauth-refresh-replay-grace` / `OAUTH_REFRESH_REPLAY_GRACE` when stale refresh-token caches are expected.
 - Streamable HTTP clients may POST JSON-RPC responses to server `ping` messages; these must be acknowledged with `202 Accepted` and no response body. The SDK handler does this itself; `TestClientResponseAccepted` guards the behavior (regression of commit 1e237ea).
 - Server-to-client keepalive pings (`--http-heartbeat`) are off by default: the SDK closes a session whose client never opened the standalone GET stream when a ping goes unanswered.
-- Behind a reverse proxy set `--public-url` / `MMS_PUBLIC_URL`; it enables the Host guard and turns off the SDK's loopback DNS-rebinding check (which would reject proxied Hosts). Deployment: `doc/deploy.md`.
+- Behind a reverse proxy set `--public-url` / `MMS_PUBLIC_URL`; it enables the Host guard and turns off the SDK's loopback DNS-rebinding check (which would reject proxied Hosts). Deployment: `doc/deploy.md`. For AI agents deploying without the script (Docker, Caddy, Traefik, existing nginx, bearer-only): follow `doc/deploy-custom.md` and run `scripts/verify-deploy.sh`.
+- Proxy in another container or host: set `--trusted-proxies` / `MMS_TRUSTED_PROXIES` (CIDRs or IPs) or the login limiter keys every user on the proxy address. `X-Real-IP` is believed only from loopback and listed peers.
 - Default builds use pure Go SQLite (`CGO_ENABLED=0`). Respect stdout protocol constraints across transports.
