@@ -1,7 +1,12 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `main.go`: Server entry point (MCP transports, CLI flags).
+- `main.go`: Entry point, CLI flags, `KnowledgeGraphManager`.
+- `config.go`: Flag/env merging (`resolveConfig`), public-URL derived defaults, startup warnings.
+- `mcp_server.go`: `newMCPServer` with the 13 tools, resources and prompts (official `modelcontextprotocol/go-sdk`).
+- `http_server.go`: `newHTTPHandler` for the `http`/`sse` transports (auth, CORS, Host guard, `/healthz`), graceful serving.
+- `auth/`: OAuth 2.1 authorization server (see `doc/oauth.md`).
+- `scripts/deploy-vps.sh`, `doc/deploy.md`: one-line VPS deployment (nginx, Let's Encrypt, systemd).
 - `storage/`: Storage interfaces and backends (`sqlite.go`, `jsonl.go`, `migration.go`).
 - `scripts/install.sh`: Cross-platform installer for release binaries.
 - `Makefile`: Standard build, format, verify, and cross-compile targets.
@@ -98,5 +103,7 @@ make fmt && make check && go test ./... && make build
 - For remote OAuth deployments, set `--oauth-store` / `OAUTH_STORE_PATH` so OAuth clients and tokens survive restarts.
 - For systemd OAuth deployments, set `UMask=0077` so OAuth SQLite database and sidecar files are private.
 - For multi-worker clients such as Codex, tune `--oauth-refresh-replay-grace` / `OAUTH_REFRESH_REPLAY_GRACE` when stale refresh-token caches are expected.
-- Streamable HTTP clients may POST JSON-RPC responses to server `ping` messages; these must be acknowledged with `202 Accepted` and no response body.
+- Streamable HTTP clients may POST JSON-RPC responses to server `ping` messages; these must be acknowledged with `202 Accepted` and no response body. The SDK handler does this itself; `TestClientResponseAccepted` guards the behavior (regression of commit 1e237ea).
+- Server-to-client keepalive pings (`--http-heartbeat`) are off by default: the SDK closes a session whose client never opened the standalone GET stream when a ping goes unanswered.
+- Behind a reverse proxy set `--public-url` / `MMS_PUBLIC_URL`; it enables the Host guard and turns off the SDK's loopback DNS-rebinding check (which would reject proxied Hosts). Deployment: `doc/deploy.md`.
 - Default builds use pure Go SQLite (`CGO_ENABLED=0`). Respect stdout protocol constraints across transports.

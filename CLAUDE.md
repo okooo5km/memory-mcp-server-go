@@ -73,10 +73,13 @@ make build        # Verify build
 
 ## Testing
 
-Tests are available in `storage/search_priority_test.go`:
+Tests are available in `storage/search_priority_test.go`, `auth/oauth_test.go` and the root package:
 
 - Search priority tests (name > type > content match ranking)
 - Storage interface compatibility tests
+- `e2e_test.go`: every tool/resource/prompt through a real SDK client (in-memory transport)
+- `http_test.go`: HTTP end-to-end (OAuth flow driven over HTTP, bearer, Host guard, DNS-rebinding protection, SSE, 202 for client responses)
+- `config_test.go`: flag/env/public-URL config derivation
 - Run with `go test -v ./...`
 
 ## Architecture
@@ -138,28 +141,32 @@ Tests are available in `storage/search_priority_test.go`:
 
 5. **Login Page** (auth/login.html):
    - Embedded HTML template (go:embed)
-   - Chinese labels, card-style layout, error display
+   - English labels, card-style layout, error display
 
 ### Core Components
 
-1. **KnowledgeGraphManager** (main.go:33-257):
+1. **KnowledgeGraphManager** (`main.go`, type `KnowledgeGraphManager`):
    - Uses storage abstraction layer
    - Auto-detection of storage type
    - Backward compatibility with legacy API
 
-2. **MCP Tools**:
-   - create_entities, create_relations, add_observations
-   - delete_entities, delete_relations, delete_observations
-   - read_graph, search_nodes, open_nodes
+2. **MCP server** (`mcp_server.go`, `newMCPServer`), built on the official `github.com/modelcontextprotocol/go-sdk`:
+   - Tools (typed `mcp.AddTool` with hand-written input schemas; handler errors surface as tool errors with `IsError=true`): create_entities, create_relations, add_observations, delete_entities, delete_relations, delete_observations, read_graph, search_nodes, open_nodes, merge_entities, update_entities, update_observations, detect_conflicts
+   - Resources `memory://graph/summary`, `memory://graph/types`, template `memory://entities/{name}`; prompts `memory-recall`, `memory-save`, `memory-review`
+   - A receiving middleware converts handler panics into errors
+
+3. **HTTP layer** (`http_server.go`, `newHTTPHandler`): Streamable HTTP (`--transport http`, alias `streamable-http`) or SSE (`/sse` only; the old `/message` path is gone), `GET /healthz`, CORS, Bearer/OAuth auth, and a Host guard when a public URL is set. The SDK's loopback DNS-rebinding protection stays on only for unauthenticated loopback listeners without a public URL. The SDK handles client JSON-RPC responses (202) itself.
+
+4. **Configuration** (`config.go`, `resolveConfig`): merges flags and env (flags win) and derives defaults from `--public-url` / `MMS_PUBLIC_URL` (http transport, host 127.0.0.1, OAuth store `oauth.db` next to the memory database). Deployment: `scripts/deploy-vps.sh`, `doc/deploy.md`.
 
 ### Command-line Arguments
 
 ```bash
 ./mms [options]
-  -t, --transport string     Transport type: stdio or sse (default "stdio")
+  -t, --transport string     stdio, http (alias streamable-http) or sse (env: MMS_TRANSPORT; default stdio, http when a public URL is set)
   -m, --memory string        Memory file path
-  -p, --port int            Port for SSE transport (default 8080)
-  --host string             Host/IP to bind for SSE/HTTP transports (env: MMS_HOST)
+  -p, --port int            Port for http/sse (env: MMS_PORT, default 8080)
+  --host string             Host/IP to bind for http/sse (env: MMS_HOST; 127.0.0.1 when a public URL is set)
   -v, --version             Show version
   -h, --help               Show help
 
@@ -173,15 +180,21 @@ Tests are available in `storage/search_priority_test.go`:
   --dry-run               Perform a dry run of migration
   --force                 Force overwrite destination file
 
-  # Auth & CORS
-  --auth-bearer string     Require Bearer token for SSE/HTTP
+  # Streamable HTTP
+  --http-endpoint string   Endpoint path (env: MMS_HTTP_ENDPOINT, default /mcp)
+  --http-heartbeat string  Keepalive ping interval, 0 disables (default 0)
+  --http-stateless         Stateless mode
+
+  # Public URL, auth & CORS
+  --public-url string      Public base URL (env: MMS_PUBLIC_URL); OAuth issuer, Host guard, deployment defaults
+  --auth-bearer string     Require Bearer token for http/sse (env: MMS_AUTH_BEARER)
   --oauth-user string      OAuth login username (env: OAUTH_USER)
-  --oauth-pass string      OAuth login password (env: OAUTH_PASS)
-  --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
+  --oauth-pass string      OAuth login password (env: OAUTH_PASS; prefer env)
+  --oauth-issuer string    Alias of --public-url (env: OAUTH_ISSUER)
   --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
   --oauth-refresh-replay-grace string
                          Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)
-  --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
+  --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (env: MMS_CORS_ORIGIN, default "*")
 ```
 
 ### Storage Type Detection
@@ -192,7 +205,7 @@ Tests are available in `storage/search_priority_test.go`:
 
 ## Key Dependencies
 
-- `github.com/mark3labs/mcp-go v0.38.0` - MCP SDK for Go
+- `github.com/modelcontextprotocol/go-sdk v1.8.0` - official MCP SDK for Go (also used by `auth/`)
 - `modernc.org/sqlite` - pure Go SQLite driver
 
 ## Migration
@@ -248,7 +261,7 @@ Tests are available in `storage/search_priority_test.go`:
 
 ## Important Notes
 
-1. **CGO Dependency**: SQLite driver requires CGO, affecting cross-compilation
+1. **No CGO**: the SQLite driver is pure Go (`modernc.org/sqlite`); builds and GoReleaser use `CGO_ENABLED=0`
 2. **Backward Compatibility**: All existing APIs remain unchanged
 3. **Data Safety**: Automatic backups during migration
 4. **Performance**: 10x+ improvement with SQLite backend

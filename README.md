@@ -53,7 +53,6 @@
 | URI | Description |
 |-----|-------------|
 | `memory://graph/summary` | Graph statistics and entity type distribution |
-| `memory://graph/recent` | Recently accessed entities |
 | `memory://graph/types` | All entity and relation type enumerations |
 | `memory://entities/{name}` | Full details of a specific entity |
 
@@ -105,10 +104,12 @@ Make sure `~/.local/bin` (or your chosen directory) is in your `PATH`.
 
 ```
 mms [options]
-  -t, --transport string   Transport type: stdio, sse, or http (default "stdio")
+  -t, --transport string   Transport: stdio, http (alias streamable-http) or sse
+                           (env: MMS_TRANSPORT; default stdio, or http when a public URL is set)
   -m, --memory string      Memory file path (auto-detected if not specified)
-  -p, --port int           Port for SSE/HTTP transport (default 8080)
-  --host string            Host/IP to bind for SSE/HTTP transports (env: MMS_HOST, default all interfaces)
+  -p, --port int           Port for http/sse transports (env: MMS_PORT, default 8080)
+  --host string            Host/IP to bind for http/sse (env: MMS_HOST; default all interfaces,
+                           or 127.0.0.1 when a public URL is set)
   -v, --version            Show version
 
   Storage:
@@ -121,34 +122,43 @@ mms [options]
   --dry-run                Dry run migration
   --force                  Overwrite destination
 
+  Deployment:
+  --public-url string      Public base URL, e.g. https://mcp.example.com (env: MMS_PUBLIC_URL).
+                           Becomes the OAuth issuer/resource and the only accepted Host (besides
+                           loopback). When set, defaults to: http transport, host 127.0.0.1 and the
+                           OAuth store at oauth.db next to the memory database
+
   Streamable HTTP:
-  --http-endpoint string   HTTP endpoint path (default "/mcp")
-  --http-heartbeat string  Heartbeat interval (default "30s")
+  --http-endpoint string   HTTP endpoint path (env: MMS_HTTP_ENDPOINT, default "/mcp")
+  --http-heartbeat string  Server-to-client keepalive ping interval, e.g. 30s; 0 disables (default "0")
   --http-stateless         Stateless HTTP mode
 
   Auth:
-  --auth-bearer string     Require Bearer token for SSE/HTTP
+  --auth-bearer string     Require Bearer token for http/sse (env: MMS_AUTH_BEARER)
 
   OAuth 2.1 (mutually exclusive with --auth-bearer):
   --oauth-user string      OAuth login username (env: OAUTH_USER)
-  --oauth-pass string      OAuth login password (env: OAUTH_PASS)
-  --oauth-issuer string    OAuth issuer URL (auto-detect if empty, env: OAUTH_ISSUER)
+  --oauth-pass string      OAuth login password (env: OAUTH_PASS; prefer the env var, argv is visible)
+  --oauth-issuer string    Alias of --public-url (env: OAUTH_ISSUER)
   --oauth-store string     SQLite path for durable OAuth clients and tokens (env: OAUTH_STORE_PATH)
   --oauth-refresh-replay-grace string
                            Duration to accept replay of a rotated refresh token (env: OAUTH_REFRESH_REPLAY_GRACE, default 75m)
 
   CORS:
-  --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
+  --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (env: MMS_CORS_ORIGIN, default "*")
 ```
+
+Flags win over environment variables. The server also serves `GET /healthz` (returns `ok`, no auth) on the http and sse transports.
+
 
 Examples:
 
 ```bash
 mms                                          # stdio, auto-detect storage
 mms --memory /path/to/memory.json            # custom path, auto-migrates to SQLite
-mms --transport sse --port 9000              # SSE transport
+mms --transport sse --port 9000              # SSE transport (endpoint /sse)
 mms --transport http --auth-bearer mytoken   # Streamable HTTP with Bearer auth
-mms --transport http --host 127.0.0.1 --oauth-user admin --oauth-pass secret --oauth-store /var/lib/mms/oauth.db  # OAuth 2.1 auth
+MMS_PUBLIC_URL=https://mcp.example.com OAUTH_USER=admin OAUTH_PASS='a-long-password' mms  # OAuth 2.1 behind a reverse proxy
 mms --transport http --cors-origin "https://app.example.com,https://admin.example.com"  # CORS whitelist
 ```
 
@@ -172,13 +182,13 @@ mms --transport http --cors-origin "https://app.example.com,https://admin.exampl
 For remote deployment with OAuth 2.1 authentication, compatible with Claude Desktop's Custom Connectors:
 
 ```bash
-# Start server with OAuth
-mms --transport http --host 127.0.0.1 --oauth-user admin --oauth-pass secret --oauth-store /var/lib/mms/oauth.db --port 8080
+# Behind a reverse proxy: the public URL implies --transport http --host 127.0.0.1 and an OAuth store next to the memory database
+MMS_PUBLIC_URL=https://mcp.example.com MMS_PORT=8080 
+OAUTH_USER=admin OAUTH_PASS='a-long-password' MEMORY_FILE_PATH=/var/lib/mms/memory.db 
+  mms
 
-# Or with environment variables and explicit issuer
-OAUTH_USER=admin OAUTH_PASS=secret OAUTH_STORE_PATH=/var/lib/mms/oauth.db \
-  OAUTH_REFRESH_REPLAY_GRACE=24h \
-  mms --transport http --oauth-issuer https://mcp.example.com
+# Local trial without TLS
+mms --transport http --host 127.0.0.1 --oauth-user admin --oauth-pass secret --oauth-store ./oauth.db
 ```
 
 Then in Claude Desktop: **Settings → Connectors → Add Custom Connector** → enter your server URL (e.g., `https://mcp.example.com/mcp`). Claude will automatically discover the OAuth endpoints and prompt you to log in.
@@ -225,9 +235,15 @@ Always check your memory before answering questions that might require past cont
 
 ## Streamable HTTP Usage
 
-The Streamable HTTP endpoint accepts JSON-RPC requests, notifications, and
-responses. Client responses such as replies to server `ping` messages are
-acknowledged with `202 Accepted` and no body, per the MCP transport spec.
+The Streamable HTTP endpoint is served by the official MCP Go SDK. It accepts
+JSON-RPC requests, notifications, and responses; client responses such as
+replies to server `ping` messages are acknowledged with `202 Accepted` and no
+body, per the MCP transport spec.
+
+With `--transport sse` the legacy HTTP+SSE transport is served instead: connect
+to `GET /sse`; the server announces a session-specific message URL
+(`/sse?sessionid=...`) to POST to. The separate `/message` path of earlier
+releases no longer exists.
 
 ```bash
 # 1. Initialize session
@@ -256,10 +272,17 @@ curl -X DELETE http://localhost:8080/mcp \
 
 ## Security & Deployment
 
+One-line VPS deployment (nginx + Let's Encrypt + systemd, OAuth 2.1 login); see [doc/deploy.md](doc/deploy.md):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/okooo5km/memory-mcp-server-go/main/scripts/deploy-vps.sh | sudo bash -s -- --domain mcp.example.com --email me@example.com
+```
+
 - Deploy behind TLS (Nginx/Caddy/Traefik), bind server to localhost
-- **Simple auth**: Use `--auth-bearer $(openssl rand -hex 32)` for programmatic clients
-- **OAuth 2.1**: Use `--oauth-user`/`--oauth-pass` for browser-based login (Claude Desktop Connectors). Set `--oauth-store` in production so registered clients and tokens survive restarts, and run the service with a restrictive umask such as systemd `UMask=0077` to protect SQLite WAL/SHM files. Supports PKCE (S256), dynamic client registration, durable token storage, and refresh token rotation with a replay grace window for concurrent or multi-worker clients. Use `--oauth-refresh-replay-grace` for clients that keep stale refresh tokens in multiple processes
-- Forward `Authorization` header from reverse proxy to backend; set `--oauth-issuer` to the public URL when behind a proxy
+- **Public URL**: set `--public-url` / `MMS_PUBLIC_URL` (for example `https://mcp.example.com`) when behind a proxy. It selects the http transport on `127.0.0.1`, becomes the OAuth issuer and resource, and restricts `/mcp`, `/sse` and the OAuth routes to that `Host` (plus loopback); other hosts get `403`. `GET /healthz` is exempt. Keep `proxy_set_header Host $host` in the proxy
+- DNS-rebinding protection: on a loopback listener without auth and without a public URL, requests with a non-loopback `Host` are rejected with `403`; it is relaxed only when a token is required or a public URL is configured
+- **Simple auth**: Use `--auth-bearer $(openssl rand -hex 32)` (or `MMS_AUTH_BEARER`) for programmatic clients; the token is compared in constant time
+- **OAuth 2.1**: Use `OAUTH_USER`/`OAUTH_PASS` (preferred over `--oauth-pass`, argv is visible in the process list) for browser-based login (Claude Desktop Connectors). With a public URL the OAuth store defaults to `oauth.db` next to the memory database; otherwise set `--oauth-store` so registered clients and tokens survive restarts, and run the service with a restrictive umask such as systemd `UMask=0077` to protect SQLite WAL/SHM files. Supports PKCE (S256, required), resource indicators, dynamic client registration and Client ID Metadata Documents, durable token storage, token revocation, and refresh token rotation with a replay grace window for concurrent or multi-worker clients. See [doc/oauth.md](doc/oauth.md)
 - Run as non-root, open only required ports, enable rate limiting for untrusted clients
 
 ## Storage System
@@ -366,8 +389,8 @@ make fmt && make check && go test ./... && make build
 
 ### Requirements
 
-* Go 1.24+
-* github.com/mark3labs/mcp-go v0.19.0+
+* Go 1.25+
+* github.com/modelcontextprotocol/go-sdk v1.8.0 (official MCP Go SDK)
 * modernc.org/sqlite (pure Go SQLite, no CGO)
 
 ### Versioning
