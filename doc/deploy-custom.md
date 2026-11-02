@@ -74,7 +74,7 @@ Flags win over environment variables. Flags with one dash or two are equivalent 
 | `--oauth-user` | `OAUTH_USER` | empty | no change | Login name. Must be set together with the password |
 | `--oauth-pass` | `OAUTH_PASS` | empty | no change | **secret**. 12 or more characters (shorter triggers a warning) |
 | `--oauth-store` | `OAUTH_STORE_PATH` | none: tokens in memory | becomes `<dir of memory db>/oauth.db` when OAuth is enabled | Durable clients and tokens |
-| `--oauth-refresh-replay-grace` | `OAUTH_REFRESH_REPLAY_GRACE` | `75m` | no change | Go duration. Raise (for example `24h`) for clients with several workers sharing stale refresh tokens |
+| `--oauth-refresh-replay-grace` | `OAUTH_REFRESH_REPLAY_GRACE` | `75m` | no change | Go duration. Raise (for example `24h`) for clients with several workers sharing stale refresh tokens. `0` disables replay |
 | `--auth-bearer` | `MMS_AUTH_BEARER` | empty | no change | **secret**. Static token. Mutually exclusive with OAuth: setting both is a startup error |
 | `--trusted-proxies` | `MMS_TRUSTED_PROXIES` | empty (loopback only) | no change | CIDRs or IPs of proxies whose `X-Real-IP` is believed (C10). Invalid value is a startup error |
 | `--http-endpoint`, `--http_ep` | `MMS_HTTP_ENDPOINT` | `/mcp` | no change | Starts with `/`, not `/`, not a built-in route. Ignored for `sse` |

@@ -40,7 +40,7 @@ type Config struct {
 	Issuer             string        // optional public base URL, scheme://host[:port] (auto-detected from request if empty)
 	ResourcePath       string        // MCP endpoint path (default "/mcp")
 	StorePath          string        // optional SQLite path for durable OAuth clients and tokens
-	RefreshReplayGrace time.Duration // optional grace period for concurrent refresh replay
+	RefreshReplayGrace time.Duration // grace period for concurrent refresh replay: 0 selects the default, negative disables replay
 	// TrustedProxies lists the peers (besides loopback, which is always
 	// trusted) whose X-Real-IP header is believed when keying rate limits.
 	TrustedProxies []netip.Prefix
@@ -115,8 +115,10 @@ func NewOAuthServerWithError(cfg Config) (*OAuthServer, error) {
 		tokens.persist = store
 	}
 	grace := cfg.RefreshReplayGrace
-	if grace <= 0 {
+	if grace == 0 {
 		grace = defaultRefreshReplayGrace
+	} else if grace < 0 {
+		grace = 0
 	}
 	s := &OAuthServer{
 		config:        cfg,

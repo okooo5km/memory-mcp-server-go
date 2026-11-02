@@ -238,6 +238,13 @@ func resolveConfig(explicit map[string]bool, getenv func(string) string, f flagV
 		if err != nil {
 			return nil, fmt.Errorf("invalid --oauth-refresh-replay-grace: %w", err)
 		}
+		if c.RefreshReplayGrace < 0 {
+			return nil, fmt.Errorf("invalid --oauth-refresh-replay-grace %q: must not be negative", g)
+		}
+		// An explicit 0 turns replay off; in auth.Config, 0 selects the default.
+		if c.RefreshReplayGrace == 0 {
+			c.RefreshReplayGrace = -1
+		}
 	}
 
 	// CORS.

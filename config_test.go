@@ -242,6 +242,17 @@ func TestResolveConfig(t *testing.T) {
 			}
 		}},
 		{name: "replay grace invalid", env: map[string]string{"OAUTH_REFRESH_REPLAY_GRACE": "x"}, wantErr: "replay-grace"},
+		{name: "replay grace negative", env: map[string]string{"OAUTH_REFRESH_REPLAY_GRACE": "-1m"}, wantErr: "replay-grace"},
+		{name: "replay grace zero disables", env: map[string]string{"OAUTH_REFRESH_REPLAY_GRACE": "0"}, check: func(t *testing.T, c *appConfig) {
+			if c.RefreshReplayGrace >= 0 {
+				t.Errorf("grace = %v", c.RefreshReplayGrace)
+			}
+		}},
+		{name: "replay grace unset keeps default", check: func(t *testing.T, c *appConfig) {
+			if c.RefreshReplayGrace != 0 {
+				t.Errorf("grace = %v", c.RefreshReplayGrace)
+			}
+		}},
 		{name: "cors env", env: map[string]string{"MMS_CORS_ORIGIN": "https://a.example"}, check: func(t *testing.T, c *appConfig) {
 			if c.CORSOrigin != "https://a.example" {
 				t.Errorf("cors = %q", c.CORSOrigin)

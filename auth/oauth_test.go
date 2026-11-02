@@ -1737,3 +1737,16 @@ func TestCIMDCacheBounded(t *testing.T) {
 		t.Fatalf("cache grew to %d", len(c.entries))
 	}
 }
+
+func TestRefreshReplayGraceConfig(t *testing.T) {
+	tests := []struct {
+		in, want time.Duration
+	}{{0, defaultRefreshReplayGrace}, {-1, 0}, {time.Minute, time.Minute}}
+	for _, tc := range tests {
+		srv := NewOAuthServer(Config{Username: "a", Password: "b", RefreshReplayGrace: tc.in})
+		if got := srv.RefreshReplayGrace(); got != tc.want {
+			t.Errorf("RefreshReplayGrace(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+		srv.Close()
+	}
+}

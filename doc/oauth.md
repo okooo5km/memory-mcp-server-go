@@ -30,7 +30,7 @@ export MEMORY_FILE_PATH=/var/lib/mms/memory.db
 | `--public-url` | `MMS_PUBLIC_URL` | Public base URL, e.g. `https://mcp.example.com`. Used as the OAuth issuer and resource |
 | `--oauth-issuer` | `OAUTH_ISSUER` | Legacy: sets only the OAuth issuer. Prefer `--public-url` |
 | `--oauth-store` | `OAUTH_STORE_PATH` | SQLite store for durable OAuth clients, access tokens, and refresh tokens |
-| `--oauth-refresh-replay-grace` | `OAUTH_REFRESH_REPLAY_GRACE` | Duration to accept replay of a rotated refresh token (default `75m`) |
+| `--oauth-refresh-replay-grace` | `OAUTH_REFRESH_REPLAY_GRACE` | Duration to accept replay of a rotated refresh token (default `75m`; `0` disables replay) |
 | `--trusted-proxies` | `MMS_TRUSTED_PROXIES` | Comma-separated CIDRs or bare IPs of reverse proxies whose `X-Real-IP` header is trusted for rate limiting. Loopback is always trusted. An invalid value is a fatal startup error |
 
 Both `--oauth-user` and `--oauth-pass` must be provided together to enable OAuth. Flags win over environment variables. Use a password of at least 12 characters; the server warns on shorter ones.
